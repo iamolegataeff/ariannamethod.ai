@@ -504,6 +504,44 @@ static inline const char* am_get_season_name(void) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// JANUS — transformer inference integration
+// "Janus will grow like mycelium, without roots, without a trunk, without a flag."
+//
+// These function pointers are set by libjanus.dylib at link time.
+// When Janus is not linked, commands are no-ops.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#ifndef AM_JANUS_DISABLED
+
+// Janus function pointer types
+typedef int   (*janus_load_model_fn)(const char* path);
+typedef void  (*janus_unload_model_fn)(void);
+typedef int   (*janus_load_delta_fn)(const char* path);
+typedef int   (*janus_load_gamma_fn)(const char* name, const char* path);
+typedef char* (*janus_generate_fn)(const char* prompt, int max_tokens, float temp, float top_p);
+typedef void  (*janus_free_string_fn)(char* s);
+typedef int   (*janus_model_loaded_fn)(void);
+typedef int   (*janus_get_vocab_size_fn)(void);
+typedef int   (*janus_get_embed_dim_fn)(void);
+typedef int   (*janus_get_num_layers_fn)(void);
+
+// Register Janus callbacks (called by host program that links libjanus)
+void am_janus_register(
+    janus_load_model_fn    load_model,
+    janus_unload_model_fn  unload_model,
+    janus_load_delta_fn    load_delta,
+    janus_load_gamma_fn    load_gamma,
+    janus_generate_fn      generate,
+    janus_free_string_fn   free_string,
+    janus_model_loaded_fn  model_loaded,
+    janus_get_vocab_size_fn get_vocab_size,
+    janus_get_embed_dim_fn  get_embed_dim,
+    janus_get_num_layers_fn get_num_layers
+);
+
+#endif // AM_JANUS_DISABLED
+
 #ifdef __cplusplus
 }
 #endif

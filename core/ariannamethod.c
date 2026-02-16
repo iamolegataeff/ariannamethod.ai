@@ -54,6 +54,44 @@ static int g_blood_count = 0;
 static char g_blood_dir[256] = {0};
 static char g_blood_cc[64] = {0};
 
+// Janus transformer integration (function pointers set by host)
+#ifndef AM_JANUS_DISABLED
+static janus_load_model_fn     g_janus_load_model     = NULL;
+static janus_unload_model_fn   g_janus_unload_model   = NULL;
+static janus_load_delta_fn     g_janus_load_delta     = NULL;
+static janus_load_gamma_fn     g_janus_load_gamma     = NULL;
+static janus_generate_fn       g_janus_generate       = NULL;
+static janus_free_string_fn    g_janus_free_string    = NULL;
+static janus_model_loaded_fn   g_janus_model_loaded   = NULL;
+static janus_get_vocab_size_fn g_janus_get_vocab_size = NULL;
+static janus_get_embed_dim_fn  g_janus_get_embed_dim  = NULL;
+static janus_get_num_layers_fn g_janus_get_num_layers = NULL;
+
+void am_janus_register(
+    janus_load_model_fn    load_model,
+    janus_unload_model_fn  unload_model,
+    janus_load_delta_fn    load_delta,
+    janus_load_gamma_fn    load_gamma,
+    janus_generate_fn      generate,
+    janus_free_string_fn   free_string,
+    janus_model_loaded_fn  model_loaded,
+    janus_get_vocab_size_fn get_vocab_size,
+    janus_get_embed_dim_fn  get_embed_dim,
+    janus_get_num_layers_fn get_num_layers
+) {
+    g_janus_load_model     = load_model;
+    g_janus_unload_model   = unload_model;
+    g_janus_load_delta     = load_delta;
+    g_janus_load_gamma     = load_gamma;
+    g_janus_generate       = generate;
+    g_janus_free_string    = free_string;
+    g_janus_model_loaded   = model_loaded;
+    g_janus_get_vocab_size = get_vocab_size;
+    g_janus_get_embed_dim  = get_embed_dim;
+    g_janus_get_num_layers = get_num_layers;
+}
+#endif
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPERS — the small bones
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1614,6 +1652,86 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
         }
       }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // JANUS — transformer inference commands
+    // "Janus will grow like mycelium, without roots, without a trunk, without a flag."
+    // ─────────────────────────────────────────────────────────────────────────
+
+#ifndef AM_JANUS_DISABLED
+    else if (!strcmp(t, "LOAD_MODEL")) {
+      if (arg && arg[0]) {
+        if (g_janus_load_model) g_janus_load_model(arg);
+        else printf("[AML] LOAD_MODEL: Janus not linked\n");
+      }
+    }
+    else if (!strcmp(t, "UNLOAD_MODEL")) {
+      if (g_janus_unload_model) g_janus_unload_model();
+    }
+    else if (!strcmp(t, "LOAD_DELTA")) {
+      if (arg && arg[0]) {
+        if (g_janus_load_delta) g_janus_load_delta(arg);
+        else printf("[AML] LOAD_DELTA: Janus not linked\n");
+      }
+    }
+    else if (!strcmp(t, "LOAD_GAMMA")) {
+      // LOAD_GAMMA name path
+      char gname[64] = {0};
+      char gpath[512] = {0};
+      if (arg && sscanf(arg, "%63s %511s", gname, gpath) == 2) {
+        // Also register in gamma slot system
+        am_gamma_load(gname, 1.0f);
+        if (g_janus_load_gamma) g_janus_load_gamma(gname, gpath);
+        else printf("[AML] LOAD_GAMMA: Janus not linked\n");
+      }
+    }
+    else if (!strcmp(t, "GENERATE")) {
+      if (arg && arg[0]) {
+        // Strip surrounding quotes if present
+        char prompt[2048] = {0};
+        int max_tok = 100;
+        const char* p = arg;
+        if (*p == '"') {
+          p++;
+          const char* end = strrchr(p, '"');
+          if (end) {
+            int len = (int)(end - p);
+            if (len > 2047) len = 2047;
+            memcpy(prompt, p, len);
+            // Parse MAX_TOKENS after closing quote
+            const char* after = end + 1;
+            while (*after == ' ') after++;
+            if (strncasecmp(after, "MAX_TOKENS", 10) == 0) {
+              sscanf(after + 10, " %d", &max_tok);
+            }
+          } else {
+            snprintf(prompt, sizeof(prompt), "%.2047s", p);
+          }
+        } else {
+          snprintf(prompt, sizeof(prompt), "%.2047s", p);
+        }
+        if (g_janus_generate) {
+          char* result = g_janus_generate(prompt, max_tok, G.effective_temp, 0.9f);
+          if (result) {
+            printf("%s\n", result);
+            if (g_janus_free_string) g_janus_free_string(result);
+          }
+        } else {
+          printf("[AML] GENERATE: Janus not linked\n");
+        }
+      }
+    }
+    else if (!strcmp(t, "MODEL_INFO")) {
+      if (g_janus_model_loaded && g_janus_model_loaded()) {
+        printf("[AML] Model: vocab=%d dim=%d layers=%d\n",
+          g_janus_get_vocab_size ? g_janus_get_vocab_size() : 0,
+          g_janus_get_embed_dim ? g_janus_get_embed_dim() : 0,
+          g_janus_get_num_layers ? g_janus_get_num_layers() : 0);
+      } else {
+        printf("[AML] No model loaded\n");
+      }
+    }
+#endif
 
     // ─────────────────────────────────────────────────────────────────────────
     // UNKNOWN COMMANDS — ignored intentionally (future-proof + vibe)
