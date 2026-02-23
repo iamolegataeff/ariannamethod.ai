@@ -200,11 +200,46 @@ Four internal experts blend based on weights. Each maps to an effective temperat
 |---------|--------|-------------|
 | `ECHO` | `ECHO <text>` | Log text to console |
 
-### 2.13 Delta Voice (Yent extension)
+### 2.13 Gamma — Personality Essence (θ = ε + γ + αδ)
+
+Commands for loading, managing, and blending personality essences. γ lives in embed_tokens, δ in lm_head, ε is the substrate.
 
 | Command | Syntax | Range | Default | Description |
 |---------|--------|-------|---------|-------------|
-| `LORA_ALPHA` | `LORA_ALPHA <float>` | 0–1 | 0 | Delta voice blending. 0=identity, 1=base model |
+| `GAMMA` | `GAMMA <name> [alpha]` | alpha: 0–1 | 1.0 | Load personality essence into slot |
+| `GAMMA_UNLOAD` | `GAMMA_UNLOAD <name>` | — | — | Unload personality essence by name |
+| `ESSENCE` | `ESSENCE <float>` | 0–1 | 0.0 | Overall γ injection strength |
+| `JANUS` | `JANUS <name_a> <name_b>` | — | — | Set dual-facing field (two personalities) |
+| `JANUS` | `JANUS OFF\|DUAL\|CYCLE` | — | OFF | Set janus mode |
+| `JANUS_BLEND` | `JANUS_BLEND <float>` | 0–1 | 0.0 | Blend ratio: 0=face_a only, 1=face_b only |
+| `GAMMA_DRIFT` | `GAMMA_DRIFT <float>` | 0–0.1 | 0.01 | How fast janus_blend changes per step (in CYCLE mode) |
+
+**Janus modes:**
+
+| Mode | Value | Description |
+|------|-------|-------------|
+| `OFF` | 0 | Single personality |
+| `DUAL` | 1 | Two essences simultaneously |
+| `CYCLE` | 2 | 4.C decides who speaks (seasonal modulation) |
+
+### 2.14 Janus — Transformer Inference
+
+Commands for controlling transformer inference when Janus (libjanus) is linked. No-ops when Janus is not available.
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `LOAD_MODEL` | `LOAD_MODEL <path>` | Load GGUF model weights |
+| `UNLOAD_MODEL` | `UNLOAD_MODEL` | Unload current model |
+| `LOAD_DELTA` | `LOAD_DELTA <path>` | Load delta (LoRA) weights |
+| `LOAD_GAMMA` | `LOAD_GAMMA <name> <path>` | Load gamma personality weights (also registers in gamma slot) |
+| `GENERATE` | `GENERATE "<prompt>" [MAX_TOKENS n]` | Generate text using loaded model |
+| `MODEL_INFO` | `MODEL_INFO` | Print model info (vocab size, embed dim, layers) |
+
+### 2.15 Delta Voice (Yent extension)
+
+| Command | Syntax | Range | Default | Description |
+|---------|--------|-------|---------|-------------|
+| `LORA_ALPHA` | `LORA_ALPHA <float>` | 0–1 | 0 | Delta voice blending. 0=no delta (substrate only), 1=full delta voice |
 
 ---
 
@@ -261,10 +296,10 @@ Runtime resonance learning. No backpropagation, no PyTorch. Per-token weight adj
 
 | Command | Syntax | Range | Default | Description |
 |---------|--------|-------|---------|-------------|
-| `PRESENCE_DECAY` | `PRESENCE_DECAY <float>` | 0.5–0.999 | 0.98 | Token presence fade rate |
+| `PRESENCE_DECAY` | `PRESENCE_DECAY <float>` | 0–1 | 0.9 | Token presence fade rate |
 | `RESONANCE_BOOST` | `RESONANCE_BOOST <word> <float>` | 0.1–0.9 | — | Manual resonance weight boost |
 | `NOTORCH_LR` | `NOTORCH_LR <float>` | 0.001–0.5 | 0.01 | Learning rate |
-| `NOTORCH_DECAY` | `NOTORCH_DECAY <float>` | 0.001–0.1 | 0.005 | Wrong prediction penalty |
+| `NOTORCH_DECAY` | `NOTORCH_DECAY <float>` | 0.9–0.9999 | 0.999 | Weight decay factor (exponential, closer to 1 = slower decay) |
 
 ---
 
@@ -380,6 +415,46 @@ def rewind_experience():
     VELOCITY BACKWARD
     TEMPORAL_MODE RETRODICTION
     TEMPORAL_ALPHA 0.0
+```
+
+### 5.7 Singularity
+
+```python
+def ignite_singularity():
+    PROPHECY 64
+    DESTINY 0.9
+    WORMHOLE 0.8
+    TUNNEL_CHANCE 0.7
+    TUNNEL_SKIP_MAX 24
+    LAW EMERGENCE_THRESHOLD 0.01
+    EXPERT_CREATIVE 0.8
+    EXPERT_SEMANTIC 0.2
+    VELOCITY RUN
+    ESSENCE 1.0
+    SEASON SUMMER
+    SEASON_INTENSITY 1.0
+```
+
+### 5.8 Janus
+
+```python
+def janus_gaze():
+    # Activate dual-facing field
+    # If two gammas loaded: dual mode. Otherwise: symmetric temporal.
+    JANUS DUAL   # (if n_gamma >= 2)
+    JANUS_BLEND 0.5
+    TEMPORAL_MODE SYMMETRIC
+    ATTEND_FOCUS 0.5
+    ATTEND_SPREAD 0.5
+    WORMHOLE 0.6
+
+def field_assemble():
+    # θ = ε + γ + αδ — trigger field assembly
+    # Sets janus to CYCLE mode: 4.C decides who speaks
+    JANUS CYCLE
+    GAMMA_DRIFT 0.01
+    ESSENCE 1.0
+    SEASON_INTENSITY 1.0
 ```
 
 ---
