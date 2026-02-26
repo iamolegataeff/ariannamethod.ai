@@ -695,25 +695,65 @@ static void persistent_restore(AML_Symtab* dst) {
     }
 }
 
-// Save execution context globals back to persistent storage
+// Save execution context globals back to persistent storage.
+// Two-phase approach:
+//   Phase 1: Update variables that already exist in persistent
+//   Phase 2: Add NEW variables that aren't in persistent yet
+// This means the first am_exec creates persistent vars, and subsequent calls
+// update them. Intermediates created by later scripts get saved once (unavoidable)
+// but since they have fixed names, the count stabilizes.
 static void persistent_save(AML_Symtab* src) {
     if (!g_persistent_enabled) return;
 
-    // Free old persistent arrays
+    // Phase 1: Update existing persistent variables from exec ctx
     for (int i = 0; i < g_persistent_globals.count; i++) {
-        if (g_persistent_globals.vars[i].type == AML_TYPE_ARRAY &&
-            g_persistent_globals.vars[i].array) {
-            am_array_free(g_persistent_globals.vars[i].array);
-            g_persistent_globals.vars[i].array = NULL;
+        AML_Var* pv = &g_persistent_globals.vars[i];
+        AML_Var* sv = NULL;
+        for (int j = 0; j < src->count; j++) {
+            if (strcmp(src->vars[j].name, pv->name) == 0) {
+                sv = &src->vars[j];
+                break;
+            }
+        }
+        if (!sv) continue;
+
+        if (sv->type == AML_TYPE_ARRAY && sv->array) {
+            AM_Array* clone = am_array_new(sv->array->len);
+            if (clone) {
+                memcpy(clone->data, sv->array->data,
+                       sv->array->len * sizeof(float));
+                clone->rows = sv->array->rows;
+                clone->cols = sv->array->cols;
+                if (pv->type == AML_TYPE_ARRAY && pv->array) {
+                    am_array_free(pv->array);
+                }
+                pv->type = AML_TYPE_ARRAY;
+                pv->array = clone;
+                pv->value = 0;
+            }
+        } else {
+            if (pv->type == AML_TYPE_ARRAY && pv->array) {
+                am_array_free(pv->array);
+                pv->array = NULL;
+            }
+            pv->type = AML_TYPE_FLOAT;
+            pv->value = sv->value;
         }
     }
-    g_persistent_globals.count = 0;
 
-    // Copy all variables from src
-    for (int i = 0; i < src->count; i++) {
-        AML_Var* sv = &src->vars[i];
+    // Phase 2: Add NEW variables from exec ctx that aren't in persistent yet
+    for (int j = 0; j < src->count; j++) {
+        AML_Var* sv = &src->vars[j];
+        int found = 0;
+        for (int i = 0; i < g_persistent_globals.count; i++) {
+            if (strcmp(g_persistent_globals.vars[i].name, sv->name) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) continue;
+
         if (sv->type == AML_TYPE_ARRAY && sv->array) {
-            // Clone: persistent storage gets its own copy
             AM_Array* clone = am_array_new(sv->array->len);
             if (clone) {
                 memcpy(clone->data, sv->array->data,
@@ -735,6 +775,19 @@ int am_set_var_array(const char* name, const float* data, int len) {
     AM_Array* arr = am_array_new(len);
     if (!arr) return 2;
     memcpy(arr->data, data, len * sizeof(float));
+    return symtab_set_array(&g_persistent_globals, name, arr);
+}
+
+int am_set_var_matrix(const char* name, const float* data, int rows, int cols) {
+    if (!name || !data || rows <= 0 || cols <= 0) return 1;
+    int len = rows * cols;
+    if (len > AM_MAX_ARRAY_SIZE) return 1;
+    g_persistent_enabled = 1;
+    AM_Array* arr = am_array_new(len);
+    if (!arr) return 2;
+    memcpy(arr->data, data, len * sizeof(float));
+    arr->rows = rows;
+    arr->cols = cols;
     return symtab_set_array(&g_persistent_globals, name, arr);
 }
 

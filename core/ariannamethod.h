@@ -869,6 +869,9 @@ void am_persistent_mode(int enable);
 // Set a named AML variable to an array (clones the array, caller keeps ownership)
 int am_set_var_array(const char* name, const float* data, int len);
 
+// Set a named AML variable to a 2D matrix (rows*cols = len, sets shape info)
+int am_set_var_matrix(const char* name, const float* data, int rows, int cols);
+
 // Get a named AML variable as array (returns pointer to internal data, do NOT free)
 // Returns NULL if variable doesn't exist or isn't an array. Sets *len if non-NULL.
 const float* am_get_var_array(const char* name, int* len);

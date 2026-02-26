@@ -11,6 +11,7 @@
 //   --n-layers N     transformer layers (default: 4)
 //   --log-every N    log loss every N steps (default: 10)
 //   --save-every N   save checkpoint every N steps (default: 100)
+//   --resume PATH    resume training from checkpoint
 //
 // Build:
 //   cc -O2 -o janus_train janus/janus_train.c core/ariannamethod.c -lm -lpthread
@@ -22,7 +23,11 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <stdarg.h>
 #include "core/ariannamethod.h"
+
+static FILE* g_logfile = NULL;
+static void trainlog(const char* fmt, ...);  // forward decl
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
@@ -40,6 +45,8 @@ typedef struct {
     int    save_every;   // checkpoint interval
     char   data_path[512];
     char   model_path[512];  // AML model file
+    char   resume_path[512]; // checkpoint to resume from
+    char   log_path[512];    // log file (optional, writes in addition to stdout)
 } TrainConfig;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -287,7 +294,113 @@ static void save_checkpoint(TrainConfig* cfg, int step) {
 
     long fsize = ftell(f);
     fclose(f);
-    printf("  Checkpoint saved: %s (%.2f MB)\n", path, (double)fsize / (1024*1024));
+    trainlog("  Checkpoint saved: %s (%.2f MB)\n", path, (double)fsize / (1024*1024));
+}
+
+static int load_checkpoint(TrainConfig* cfg, const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "ERROR: cannot open checkpoint %s\n", path);
+        return -1;
+    }
+
+    // Read header
+    int header[8];
+    if (fread(header, sizeof(int), 8, f) != 8) {
+        fprintf(stderr, "ERROR: corrupt checkpoint header\n");
+        fclose(f);
+        return -1;
+    }
+
+    if (header[0] != 0x4A414E55) {
+        fprintf(stderr, "ERROR: bad magic in checkpoint (got 0x%08X)\n", header[0]);
+        fclose(f);
+        return -1;
+    }
+
+    int ckpt_step = header[6];
+    printf("Loading checkpoint: step %d (D=%d, H=%d, L=%d)\n",
+           ckpt_step, header[2], header[3], header[4]);
+
+    // Verify config matches
+    if (header[1] != cfg->vocab_size || header[2] != cfg->n_embd ||
+        header[3] != cfg->n_heads || header[4] != cfg->n_layers ||
+        header[5] != cfg->seq_len) {
+        fprintf(stderr, "ERROR: checkpoint config mismatch\n"
+                "  checkpoint: V=%d D=%d H=%d L=%d S=%d\n"
+                "  current:    V=%d D=%d H=%d L=%d S=%d\n",
+                header[1], header[2], header[3], header[4], header[5],
+                cfg->vocab_size, cfg->n_embd, cfg->n_heads, cfg->n_layers, cfg->seq_len);
+        fclose(f);
+        return -1;
+    }
+
+    // Load global weights as matrices with correct shapes
+    // Order matches save: wte, wpe, lm_head
+    struct { const char* name; int rows; int cols; } globals[] = {
+        {"wte",     cfg->vocab_size, cfg->n_embd},
+        {"wpe",     cfg->seq_len,    cfg->n_embd},
+        {"lm_head", cfg->vocab_size, cfg->n_embd},
+    };
+    for (int i = 0; i < 3; i++) {
+        int len = 0;
+        if (fread(&len, sizeof(int), 1, f) != 1) {
+            fprintf(stderr, "ERROR: corrupt checkpoint at weight %s\n", globals[i].name);
+            fclose(f);
+            return -1;
+        }
+        if (len != globals[i].rows * globals[i].cols) {
+            fprintf(stderr, "ERROR: size mismatch for %s: got %d, expected %d×%d=%d\n",
+                    globals[i].name, len, globals[i].rows, globals[i].cols,
+                    globals[i].rows * globals[i].cols);
+            fclose(f);
+            return -1;
+        }
+        float* buf = (float*)malloc(len * sizeof(float));
+        if (fread(buf, sizeof(float), len, f) != (size_t)len) {
+            fprintf(stderr, "ERROR: truncated checkpoint at weight %s\n", globals[i].name);
+            free(buf);
+            fclose(f);
+            return -1;
+        }
+        am_set_var_matrix(globals[i].name, buf, globals[i].rows, globals[i].cols);
+        free(buf);
+    }
+
+    // Load per-layer weights (all are n_embd × n_embd matrices)
+    for (int l = 0; l < cfg->n_layers; l++) {
+        char name[32];
+        const char* suffixes[] = {"wq", "wk", "wv", "wo", "w1_", "w3_", "w2_", NULL};
+        for (int s = 0; suffixes[s]; s++) {
+            snprintf(name, sizeof(name), "%s%d", suffixes[s], l);
+            int len = 0;
+            if (fread(&len, sizeof(int), 1, f) != 1) {
+                fprintf(stderr, "ERROR: corrupt checkpoint at %s\n", name);
+                fclose(f);
+                return -1;
+            }
+            if (len != cfg->n_embd * cfg->n_embd) {
+                fprintf(stderr, "ERROR: size mismatch for %s: got %d, expected %d\n",
+                        name, len, cfg->n_embd * cfg->n_embd);
+                fclose(f);
+                return -1;
+            }
+            float* buf = (float*)malloc(len * sizeof(float));
+            if (fread(buf, sizeof(float), len, f) != (size_t)len) {
+                fprintf(stderr, "ERROR: truncated checkpoint at %s\n", name);
+                free(buf);
+                fclose(f);
+                return -1;
+            }
+            am_set_var_matrix(name, buf, cfg->n_embd, cfg->n_embd);
+            free(buf);
+        }
+    }
+
+    fclose(f);
+    printf("Checkpoint loaded: %d weights restored from step %d\n",
+           3 + cfg->n_layers * 7, ckpt_step);
+    return ckpt_step;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -307,6 +420,8 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
     cfg->save_every = 100;
     cfg->data_path[0] = 0;
     cfg->model_path[0] = 0;  // empty = generate dynamically
+    cfg->resume_path[0] = 0;
+    cfg->log_path[0] = 0;
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -329,6 +444,10 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
             cfg->save_every = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--model") && i+1 < argc) {
             snprintf(cfg->model_path, sizeof(cfg->model_path), "%s", argv[++i]);
+        } else if (!strcmp(argv[i], "--resume") && i+1 < argc) {
+            snprintf(cfg->resume_path, sizeof(cfg->resume_path), "%s", argv[++i]);
+        } else if (!strcmp(argv[i], "--log-file") && i+1 < argc) {
+            snprintf(cfg->log_path, sizeof(cfg->log_path), "%s", argv[++i]);
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             printf("Usage: janus_train <text_file> [options]\n"
                    "  --steps N       training steps (default: 1000)\n"
@@ -339,7 +458,8 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
                    "  --n-layers N    transformer layers (default: 4)\n"
                    "  --log-every N   log interval (default: 10)\n"
                    "  --save-every N  checkpoint interval (default: 100)\n"
-                   "  --model PATH    AML model file\n");
+                   "  --model PATH    AML model file\n"
+                   "  --resume PATH   resume from checkpoint\n");
             exit(0);
         }
     }
@@ -362,9 +482,32 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
 // Main training loop
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Log to both stdout and logfile (if open)
+static void trainlog(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    fflush(stdout);
+    if (g_logfile) {
+        va_start(ap, fmt);
+        vfprintf(g_logfile, fmt, ap);
+        va_end(ap);
+        fflush(g_logfile);
+    }
+}
+
 int main(int argc, char** argv) {
     TrainConfig cfg;
     parse_args(argc, argv, &cfg);
+
+    // Open log file if specified
+    if (cfg.log_path[0]) {
+        g_logfile = fopen(cfg.log_path, "a");
+        if (!g_logfile) {
+            fprintf(stderr, "WARNING: cannot open log file %s\n", cfg.log_path);
+        }
+    }
 
     printf("═══════════════════════════════════════════════════\n");
     printf("  JANUS TRAINING — AML/C Native Transformer\n");
@@ -379,7 +522,10 @@ int main(int argc, char** argv) {
     printf("Seq len:    %d\n", cfg.seq_len);
     printf("LR:         %.6f\n", cfg.lr);
     printf("Steps:      %d\n", cfg.total_steps);
+    if (cfg.resume_path[0])
+        printf("Resume:     %s\n", cfg.resume_path);
     printf("─────────────────────────────────────────────────\n");
+    fflush(stdout);
 
     // Load data
     DataLoader dl;
@@ -423,9 +569,23 @@ int main(int argc, char** argv) {
         am_exec(hyper);
     }
 
-    // Initialize weights
-    printf("Initializing weights...\n");
-    init_weights(&cfg);
+    // Initialize weights (or load from checkpoint)
+    int start_step = 0;
+    if (cfg.resume_path[0]) {
+        // Skip init_weights when resuming — load_checkpoint creates vars directly
+        printf("Loading checkpoint...\n"); fflush(stdout);
+        start_step = load_checkpoint(&cfg, cfg.resume_path);
+        if (start_step < 0) return 1;
+        long total_params = (long)cfg.vocab_size * cfg.n_embd * 2 +
+                            (long)cfg.seq_len * cfg.n_embd +
+                            (long)cfg.n_layers * 7 * cfg.n_embd * cfg.n_embd;
+        printf("Parameters: %ld (%.2f M)\n", total_params, (double)total_params / 1e6);
+        printf("Resuming from step %d → training to step %d\n", start_step, cfg.total_steps);
+    } else {
+        printf("Initializing weights...\n"); fflush(stdout);
+        init_weights(&cfg);
+    }
+    fflush(stdout);
     printf("─────────────────────────────────────────────────\n");
 
     // Allocate batch buffers
@@ -442,7 +602,7 @@ int main(int argc, char** argv) {
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
-    for (int step = 1; step <= cfg.total_steps; step++) {
+    for (int step = start_step + 1; step <= cfg.total_steps; step++) {
         // Get batch
         data_get_batch(&dl, tokens, targets, cfg.seq_len);
 
@@ -467,11 +627,11 @@ int main(int argc, char** argv) {
             clock_gettime(CLOCK_MONOTONIC, &t_end);
             double elapsed = (t_end.tv_sec - t_start.tv_sec) +
                            (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
-            double tokens_per_sec = (double)(step * cfg.seq_len) / elapsed;
+            double tokens_per_sec = (double)((step - start_step) * cfg.seq_len) / elapsed;
             float avg_loss = loss_sum / loss_count;
 
-            printf("step %5d | loss %.4f (avg %.4f) | %.0f tok/s | %.1fs\n",
-                   step, loss, avg_loss, tokens_per_sec, elapsed);
+            trainlog("step %5d | loss %.4f (avg %.4f) | %.0f tok/s | %.1fs\n",
+                     step, loss, avg_loss, tokens_per_sec, elapsed);
 
             loss_sum = 0;
             loss_count = 0;
@@ -480,6 +640,7 @@ int main(int argc, char** argv) {
         // Checkpoint
         if (step % cfg.save_every == 0) {
             save_checkpoint(&cfg, step);
+            fflush(stdout);
         }
     }
 
