@@ -483,6 +483,11 @@ static void am_spawn_reset(void);
 static void am_channel_reset(void);
 #endif
 
+// Forward declarations for persistent globals (defined after am_init)
+static int g_persistent_enabled;
+static AML_Symtab g_persistent_globals;
+void am_persistent_clear(void);
+
 void am_init(void) {
   // Clean up tape from previous session
   am_tape_destroy();
@@ -618,6 +623,10 @@ void am_init(void) {
   // blood compiler
   am_blood_init();
 
+  // persistent globals — clear on full init
+  am_persistent_clear();
+  g_persistent_enabled = 0;
+
   // lilith I/O
 #ifndef AM_IO_DISABLED
   am_pipe_close_all();
@@ -631,6 +640,118 @@ void am_init(void) {
   am_spawn_reset();
   am_channel_reset();
 #endif
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERSISTENT GLOBALS — survive across am_exec() calls
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Forward declarations for symtab functions (defined later in file)
+static float*   symtab_get(AML_Symtab* tab, const char* name);
+static AML_Var* symtab_get_var(AML_Symtab* tab, const char* name);
+static int      symtab_set(AML_Symtab* tab, const char* name, float value);
+static int      symtab_set_array(AML_Symtab* tab, const char* name, AM_Array* arr);
+
+void am_persistent_mode(int enable) {
+    if (!enable && g_persistent_enabled) {
+        // Turning off — free all persistent arrays
+        am_persistent_clear();
+    }
+    g_persistent_enabled = enable;
+}
+
+void am_persistent_clear(void) {
+    for (int i = 0; i < g_persistent_globals.count; i++) {
+        if (g_persistent_globals.vars[i].type == AML_TYPE_ARRAY &&
+            g_persistent_globals.vars[i].array) {
+            am_array_free(g_persistent_globals.vars[i].array);
+            g_persistent_globals.vars[i].array = NULL;
+        }
+    }
+    g_persistent_globals.count = 0;
+}
+
+// Restore persistent globals into execution context
+static void persistent_restore(AML_Symtab* dst) {
+    if (!g_persistent_enabled) return;
+    for (int i = 0; i < g_persistent_globals.count; i++) {
+        AML_Var* pv = &g_persistent_globals.vars[i];
+        if (pv->type == AML_TYPE_ARRAY && pv->array) {
+            // Clone array: exec ctx gets its own copy, persistent keeps original
+            AM_Array* clone = am_array_new(pv->array->len);
+            if (clone) {
+                memcpy(clone->data, pv->array->data,
+                       pv->array->len * sizeof(float));
+                clone->rows = pv->array->rows;
+                clone->cols = pv->array->cols;
+                symtab_set_array(dst, pv->name, clone);
+            }
+        } else {
+            symtab_set(dst, pv->name, pv->value);
+        }
+    }
+}
+
+// Save execution context globals back to persistent storage
+static void persistent_save(AML_Symtab* src) {
+    if (!g_persistent_enabled) return;
+
+    // Free old persistent arrays
+    for (int i = 0; i < g_persistent_globals.count; i++) {
+        if (g_persistent_globals.vars[i].type == AML_TYPE_ARRAY &&
+            g_persistent_globals.vars[i].array) {
+            am_array_free(g_persistent_globals.vars[i].array);
+            g_persistent_globals.vars[i].array = NULL;
+        }
+    }
+    g_persistent_globals.count = 0;
+
+    // Copy all variables from src
+    for (int i = 0; i < src->count; i++) {
+        AML_Var* sv = &src->vars[i];
+        if (sv->type == AML_TYPE_ARRAY && sv->array) {
+            // Clone: persistent storage gets its own copy
+            AM_Array* clone = am_array_new(sv->array->len);
+            if (clone) {
+                memcpy(clone->data, sv->array->data,
+                       sv->array->len * sizeof(float));
+                clone->rows = sv->array->rows;
+                clone->cols = sv->array->cols;
+                symtab_set_array(&g_persistent_globals, sv->name, clone);
+            }
+        } else {
+            symtab_set(&g_persistent_globals, sv->name, sv->value);
+        }
+    }
+}
+
+int am_set_var_array(const char* name, const float* data, int len) {
+    if (!name || !data || len <= 0 || len > AM_MAX_ARRAY_SIZE) return 1;
+    // Force persistent mode on
+    g_persistent_enabled = 1;
+    AM_Array* arr = am_array_new(len);
+    if (!arr) return 2;
+    memcpy(arr->data, data, len * sizeof(float));
+    return symtab_set_array(&g_persistent_globals, name, arr);
+}
+
+const float* am_get_var_array(const char* name, int* len) {
+    if (!name) return NULL;
+    AML_Var* v = symtab_get_var(&g_persistent_globals, name);
+    if (!v || v->type != AML_TYPE_ARRAY || !v->array) return NULL;
+    if (len) *len = v->array->len;
+    return v->array->data;
+}
+
+float am_get_var_float(const char* name) {
+    if (!name) return 0.0f;
+    AML_Var* v = symtab_get_var(&g_persistent_globals, name);
+    if (!v) return 0.0f;
+    if (v->type == AML_TYPE_FLOAT) return v->value;
+    // Array with 1 element → treat as scalar
+    if (v->type == AML_TYPE_ARRAY && v->array && v->array->len >= 1)
+        return v->array->data[0];
+    return 0.0f;
 }
 
 // enable/disable packs
@@ -4360,6 +4481,9 @@ int am_exec(const char* script) {
     ctx.lines = lines;
     ctx.nlines = nlines;
 
+    // v4.0: restore persistent globals if enabled
+    persistent_restore(&ctx.globals);
+
     // register built-in functions (native AML, not external bindings)
     aml_register_builtins(&ctx);
 
@@ -4369,7 +4493,8 @@ int am_exec(const char* script) {
     // second pass: execute top-level block
     aml_exec_block(&ctx, 0, nlines);
 
-    // v4.0: clean up global arrays
+    // v4.0: save globals to persistent storage, then clean up
+    persistent_save(&ctx.globals);
     symtab_clear_arrays(&ctx.globals);
 
     free(lines);

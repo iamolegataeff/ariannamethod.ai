@@ -854,6 +854,31 @@ float am_method_field_coherence(void);
 AM_MethodSteering am_method_step(float dt);
 AM_MethodState* am_method_get_state(void);
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PERSISTENT GLOBALS — C training host API
+// When persistent mode is ON, AML variables survive across am_exec() calls.
+// The C host can inject/read arrays by name, enabling batch-feeding loops:
+//   am_set_var_array("tokens", tok_arr);
+//   am_exec(model_script);
+//   float loss = am_get_var_float("loss");
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Enable/disable persistent globals mode (default: OFF)
+void am_persistent_mode(int enable);
+
+// Set a named AML variable to an array (clones the array, caller keeps ownership)
+int am_set_var_array(const char* name, const float* data, int len);
+
+// Get a named AML variable as array (returns pointer to internal data, do NOT free)
+// Returns NULL if variable doesn't exist or isn't an array. Sets *len if non-NULL.
+const float* am_get_var_array(const char* name, int* len);
+
+// Get a named AML variable as float. Returns 0 if not found.
+float am_get_var_float(const char* name);
+
+// Clear all persistent globals (frees arrays, resets to empty)
+void am_persistent_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

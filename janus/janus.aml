@@ -78,7 +78,8 @@ while step < 50:
 
     # ── SwiGLU MLP ──
     h_norm = seq_rmsnorm(h, 8, 32)
-    gate = silu(seq_matvec(w1, h_norm, 8))
+    gate_pre = seq_matvec(w1, h_norm, 8)
+    gate = silu(gate_pre)
     up = seq_matvec(w3, h_norm, 8)
     mlp_out = mul(gate, up)
     mlp_proj = seq_matvec(w2, mlp_out, 8)
