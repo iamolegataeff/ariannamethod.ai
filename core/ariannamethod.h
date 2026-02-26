@@ -236,7 +236,7 @@ typedef struct {
 
 #define AML_MAX_LINES       1024
 #define AML_MAX_LINE_LEN    256
-#define AML_MAX_VARS        64
+#define AML_MAX_VARS        256
 #define AML_MAX_NAME        32
 #define AML_MAX_FUNCS       64    // increased: 32 user + 32 built-in
 #define AML_MAX_PARAMS      8

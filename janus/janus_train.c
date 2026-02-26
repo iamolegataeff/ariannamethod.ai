@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L
+#define _POSIX_C_SOURCE 200809L
 // janus_train.c — C training host for Janus transformer
 // Byte-level language model trained entirely in AML/C. No Python. No PyTorch.
 //
@@ -109,7 +109,7 @@ static void data_free(DataLoader* dl) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 static void init_weights(TrainConfig* cfg) {
-    char script[4096];
+    char script[16384];
     int n = snprintf(script, sizeof(script),
         "# ── Janus weight initialization ──\n"
         "wte = matrix(%d, %d, 0.02)\n"
@@ -160,8 +160,62 @@ static void init_weights(TrainConfig* cfg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Model script loading
+// Model script generation — builds forward pass AML from config
 // ═══════════════════════════════════════════════════════════════════════════════
+
+static char* generate_model_script(TrainConfig* cfg) {
+    // ~600 bytes per layer + ~512 bytes overhead
+    int bufsize = cfg->n_layers * 768 + 1024;
+    char* s = (char*)malloc(bufsize);
+    if (!s) return NULL;
+
+    int n = 0;
+
+    // TAPE START + register parameters
+    n += snprintf(s + n, bufsize - n, "TAPE START\nTAPE PARAM wte\nTAPE PARAM wpe\n");
+    for (int l = 0; l < cfg->n_layers; l++) {
+        n += snprintf(s + n, bufsize - n,
+            "TAPE PARAM wq%d\nTAPE PARAM wk%d\nTAPE PARAM wv%d\nTAPE PARAM wo%d\n"
+            "TAPE PARAM w1_%d\nTAPE PARAM w3_%d\nTAPE PARAM w2_%d\n",
+            l, l, l, l, l, l, l);
+    }
+    n += snprintf(s + n, bufsize - n, "TAPE PARAM lm_head\n");
+
+    // Embed
+    n += snprintf(s + n, bufsize - n,
+        "h = seq_embed(wte, wpe, tokens, seq_len)\n");
+
+    // Transformer layers
+    for (int l = 0; l < cfg->n_layers; l++) {
+        n += snprintf(s + n, bufsize - n,
+            "h_norm = seq_rmsnorm(h, seq_len, n_embd)\n"
+            "q = seq_matvec(wq%d, h_norm, seq_len)\n"
+            "k = seq_matvec(wk%d, h_norm, seq_len)\n"
+            "v = seq_matvec(wv%d, h_norm, seq_len)\n"
+            "attn_out = multi_head_attention(q, k, v, seq_len, n_embd, n_heads)\n"
+            "attn_proj = seq_matvec(wo%d, attn_out, seq_len)\n"
+            "h = add(h, attn_proj)\n"
+            "h_norm = seq_rmsnorm(h, seq_len, n_embd)\n"
+            "gate_pre = seq_matvec(w1_%d, h_norm, seq_len)\n"
+            "gate = silu(gate_pre)\n"
+            "up = seq_matvec(w3_%d, h_norm, seq_len)\n"
+            "mlp_out = mul(gate, up)\n"
+            "mlp_proj = seq_matvec(w2_%d, mlp_out, seq_len)\n"
+            "h = add(h, mlp_proj)\n",
+            l, l, l, l, l, l, l);
+    }
+
+    // Output head + loss + backward + update
+    n += snprintf(s + n, bufsize - n,
+        "h_norm = seq_rmsnorm(h, seq_len, n_embd)\n"
+        "logits = seq_matvec(lm_head, h_norm, seq_len)\n"
+        "loss = seq_cross_entropy(logits, targets, seq_len, vocab_size)\n"
+        "TAPE BACKWARD loss\n"
+        "TAPE ADAM_STEP lr\n"
+        "TAPE CLEAR\n");
+
+    return s;
+}
 
 static char* load_model_script(const char* path) {
     FILE* f = fopen(path, "r");
@@ -252,8 +306,7 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
     cfg->log_every = 10;
     cfg->save_every = 100;
     cfg->data_path[0] = 0;
-    snprintf(cfg->model_path, sizeof(cfg->model_path),
-             "janus/janus_train_model.aml");
+    cfg->model_path[0] = 0;  // empty = generate dynamically
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] != '-') {
@@ -318,7 +371,7 @@ int main(int argc, char** argv) {
     printf("  No Python. No PyTorch. No dependencies.\n");
     printf("═══════════════════════════════════════════════════\n");
     printf("Data:       %s\n", cfg.data_path);
-    printf("Model:      %s\n", cfg.model_path);
+    printf("Model:      %s\n", cfg.model_path[0] ? cfg.model_path : "(generated)");
     printf("Vocab:      %d (byte-level)\n", cfg.vocab_size);
     printf("Embedding:  %d\n", cfg.n_embd);
     printf("Heads:      %d (head_dim=%d)\n", cfg.n_heads, cfg.n_embd / cfg.n_heads);
@@ -339,9 +392,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Load model script
-    char* model_script = load_model_script(cfg.model_path);
-    if (!model_script) return 1;
+    // Load or generate model script
+    char* model_script;
+    if (cfg.model_path[0]) {
+        model_script = load_model_script(cfg.model_path);
+    } else {
+        model_script = generate_model_script(&cfg);
+    }
+    if (!model_script) {
+        fprintf(stderr, "ERROR: cannot create model script\n");
+        return 1;
+    }
 
     // Initialize AML
     am_init();

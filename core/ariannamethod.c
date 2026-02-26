@@ -31,6 +31,9 @@
 #include <strings.h> // for strcasecmp
 #include <stddef.h>  // for offsetof
 #include <time.h>    // for real calendar computation
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #ifndef AM_BLOOD_DISABLED
 #include <dlfcn.h>   // for dlopen, dlsym, dlclose (Blood compiler)
 #endif
@@ -1340,17 +1343,26 @@ void am_tape_backward(int loss_idx) {
                 float* dw = (float*)calloc(pw->output->len, sizeof(float));
                 float* dx = (float*)calloc(px->output->len, sizeof(float));
                 if (dw && dx) {
+                    float* Wd = pw->output->data;
+                    float* Xd = px->output->data;
+                    // dX: each position t independent → parallelize over t
+                    #ifdef _OPENMP
+                    #pragma omp parallel for schedule(static) if(T > 16)
+                    #endif
                     for (int t = 0; t < T; t++) {
                         float* dout_t = dout + t * out_d;
-                        float* x_t = px->output->data + t * in_d;
-                        // dW += dout_t ⊗ x_t
-                        for (int i = 0; i < out_d; i++)
-                            for (int j = 0; j < in_d; j++)
-                                dw[i * in_d + j] += dout_t[i] * x_t[j];
                         // dX_t += W^T @ dout_t
                         for (int j = 0; j < in_d; j++)
                             for (int i = 0; i < out_d; i++)
-                                dx[t * in_d + j] += pw->output->data[i * in_d + j] * dout_t[i];
+                                dx[t * in_d + j] += Wd[i * in_d + j] * dout_t[i];
+                    }
+                    // dW: accumulates across T → can't trivially parallelize outer loop
+                    for (int t = 0; t < T; t++) {
+                        float* dout_t = dout + t * out_d;
+                        float* x_t = Xd + t * in_d;
+                        for (int i = 0; i < out_d; i++)
+                            for (int j = 0; j < in_d; j++)
+                                dw[i * in_d + j] += dout_t[i] * x_t[j];
                     }
                     tape_acc_grad(e->parent1, dw, pw->output->len);
                     tape_acc_grad(e->parent2, dx, px->output->len);
@@ -1368,8 +1380,12 @@ void am_tape_backward(int loss_idx) {
                 int D = (int)e->aux2;
                 float* gx = (float*)calloc(T * D, sizeof(float));
                 if (gx) {
+                    float* Xrn = px->output->data;
+                    #ifdef _OPENMP
+                    #pragma omp parallel for schedule(static) if(T > 32)
+                    #endif
                     for (int t = 0; t < T; t++) {
-                        float* x_t = px->output->data + t * D;
+                        float* x_t = Xrn + t * D;
                         float* dout_t = dout + t * D;
                         float ss = 0;
                         for (int d = 0; d < D; d++) ss += x_t[d] * x_t[d];
@@ -3896,13 +3912,19 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             if (T * in_dim > vx->array->len) return NULL;
             AM_Array* out = am_array_new(T * out_dim);
             if (!out) return NULL;
+            float* W = vw->array->data;
+            float* X = vx->array->data;
+            float* Y = out->data;
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static) if(T * out_dim > 4096)
+            #endif
             for (int t = 0; t < T; t++) {
-                float* x_t = vx->array->data + t * in_dim;
-                float* y_t = out->data + t * out_dim;
+                float* x_t = X + t * in_dim;
+                float* y_t = Y + t * out_dim;
                 for (int i = 0; i < out_dim; i++) {
                     float s = 0;
                     for (int j = 0; j < in_dim; j++)
-                        s += vw->array->data[i * in_dim + j] * x_t[j];
+                        s += W[i * in_dim + j] * x_t[j];
                     y_t[i] = s;
                 }
             }
@@ -3925,9 +3947,14 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             if (T * D > vx->array->len) return NULL;
             AM_Array* out = am_array_new(T * D);
             if (!out) return NULL;
+            float* Xr = vx->array->data;
+            float* Or = out->data;
+            #ifdef _OPENMP
+            #pragma omp parallel for schedule(static) if(T > 32)
+            #endif
             for (int t = 0; t < T; t++) {
-                float* x_t = vx->array->data + t * D;
-                float* o_t = out->data + t * D;
+                float* x_t = Xr + t * D;
+                float* o_t = Or + t * D;
                 float ss = 0;
                 for (int d = 0; d < D; d++) ss += x_t[d] * x_t[d];
                 float rms = sqrtf(ss / D + 1e-6f);
@@ -4017,35 +4044,50 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             float scale = 1.0f / sqrtf((float)head_dim);
             AM_Array* out = am_array_new(T * D);
             if (!out) return NULL;
+            float* Qd = vq->array->data;
+            float* Kd = vk->array->data;
+            float* Vd = vv->array->data;
+            float* Od = out->data;
+            #ifdef _OPENMP
+            #pragma omp parallel if(n_heads >= 2)
+            {
+            float* scores_buf = (float*)malloc(T * sizeof(float));
+            #pragma omp for schedule(static) collapse(2)
+            #else
+            float* scores_buf = (float*)malloc(T * sizeof(float));
+            #endif
             for (int h = 0; h < n_heads; h++) {
-                int ho = h * head_dim;
                 for (int i = 0; i < T; i++) {
-                    float* qi = vq->array->data + i * D + ho;
-                    float* scores = (float*)calloc(i + 1, sizeof(float));
-                    if (!scores) { am_array_free(out); return NULL; }
+                    int ho = h * head_dim;
+                    float* qi = Qd + i * D + ho;
                     float mx = -1e30f;
                     for (int j = 0; j <= i; j++) {
-                        float* kj = vk->array->data + j * D + ho;
+                        float* kj = Kd + j * D + ho;
                         float dot = 0;
                         for (int d = 0; d < head_dim; d++) dot += qi[d] * kj[d];
-                        scores[j] = dot * scale;
-                        if (scores[j] > mx) mx = scores[j];
+                        scores_buf[j] = dot * scale;
+                        if (scores_buf[j] > mx) mx = scores_buf[j];
                     }
                     float sum = 0;
                     for (int j = 0; j <= i; j++) {
-                        scores[j] = expf(scores[j] - mx);
-                        sum += scores[j];
+                        scores_buf[j] = expf(scores_buf[j] - mx);
+                        sum += scores_buf[j];
                     }
-                    if (sum > 0) for (int j = 0; j <= i; j++) scores[j] /= sum;
-                    float* oi = out->data + i * D + ho;
+                    if (sum > 0) for (int j = 0; j <= i; j++) scores_buf[j] /= sum;
+                    float* oi = Od + i * D + ho;
                     for (int d = 0; d < head_dim; d++) oi[d] = 0;
                     for (int j = 0; j <= i; j++) {
-                        float* vj = vv->array->data + j * D + ho;
-                        for (int d = 0; d < head_dim; d++) oi[d] += scores[j] * vj[d];
+                        float* vj = Vd + j * D + ho;
+                        for (int d = 0; d < head_dim; d++) oi[d] += scores_buf[j] * vj[d];
                     }
-                    free(scores);
                 }
             }
+            #ifdef _OPENMP
+            free(scores_buf);
+            }
+            #else
+            free(scores_buf);
+            #endif
             if (am_tape_is_active())
                 am_tape_record3(out, AM_OP_MH_CAUSAL_ATTN,
                     tape_ensure_entry(vq->array), tape_ensure_entry(vk->array),
