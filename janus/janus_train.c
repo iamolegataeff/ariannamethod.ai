@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 // janus_train.c — C training host for Janus transformer
 // Byte-level language model trained entirely in AML/C. No Python. No PyTorch.
 //
