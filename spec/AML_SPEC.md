@@ -564,6 +564,17 @@ float             am_method_field_syntropy(void);
 float             am_method_field_coherence(void);
 AM_MethodSteering am_method_step(float dt);
 AM_MethodState*   am_method_get_state(void);
+
+// Lilith I/O — named pipe infrastructure
+int            am_pipe_create(const char* path);
+int            am_pipe_open(const char* name, const char* path, int mode);
+int            am_pipe_write(const char* name, const char* message);
+int            am_pipe_read(const char* name, char* buf, int bufsize);
+void           am_pipe_close(const char* name);
+void           am_pipe_close_all(void);
+float          am_pipe_last_value(void);
+int            am_pipe_count(void);
+const AM_Pipe* am_pipe_get(int idx);
 ```
 
 ### 8.2 Lua API
@@ -692,6 +703,7 @@ winter_energy       float   0–1         Rest/compression energy (computed)
 | **AML 2.0** | 2 | INCLUDE, def, variables, if/else, while, built-in functions — **implemented** |
 | **AML 3.0** | 3 | Blood compiler: runtime C compilation via popen+dlopen+dlsym — **implemented** |
 | **AML 3.1** | 3 | HarmonicNet (weightless neural network), METHOD (distributed cognition operator) — **implemented** |
+| **AML 3.2** | 3 | Lilith I/O: named pipes (PIPE, INDEX), data infrastructure communication — **implemented** |
 
 ---
 
@@ -814,11 +826,84 @@ Evolved in molequla (`github.com/ariannamethod/molequla`), ported to core.
 
 ---
 
-## 17. Implementations
+## 17. Lilith I/O — Data Infrastructure Communication
+
+Named pipe (FIFO) subsystem for communication between AML scripts and external processes. Designed for Lilith: AML brain steering INDEX nodes (Go binaries) that crawl, embed, and index data from the outside world.
+
+*"Та, которая была до Евы."*
+
+### 17.1 PIPE Commands (Low-Level)
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `PIPE CREATE` | `PIPE CREATE <path>` | Create a named pipe (FIFO) at filesystem path |
+| `PIPE OPEN` | `PIPE OPEN <name> <path> <mode>` | Open pipe. Mode: `READ` or `WRITE` |
+| `PIPE WRITE` | `PIPE WRITE <name> "<message>"` | Write message to named pipe |
+| `PIPE READ` | `PIPE READ <name>` | Non-blocking read. Result in `_pipe_value` variable |
+| `PIPE CLOSE` | `PIPE CLOSE <name>` | Close named pipe by logical name |
+| `PIPE CLOSE` | `PIPE CLOSE ALL` | Close all open pipes |
+| `PIPE LIST` | `PIPE LIST` | Print list of open pipes |
+
+### 17.2 INDEX Commands (High-Level Sugar)
+
+Sugar over PIPE for managing INDEX nodes. Convention: pipe names `idx<id>_cmd` (write) and `idx<id>_rsp` (read), paths `/tmp/lilith_idx<id>_cmd` and `/tmp/lilith_idx<id>_rsp`.
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `INDEX INIT` | `INDEX <id> INIT` | Create + open cmd/rsp pipes for INDEX node |
+| `INDEX FETCH` | `INDEX <id> FETCH <source>` | Send fetch command (e.g. `r/philosophy`) |
+| `INDEX STATUS` | `INDEX <id> STATUS` | Request and read status from INDEX node |
+| `INDEX STOP` | `INDEX <id> STOP` | Send stop command |
+| `INDEX CLOSE` | `INDEX <id> CLOSE` | Close both pipes for INDEX node |
+
+### 17.3 Implementation
+
+- Named pipes (FIFO) via POSIX `mkfifo()`, `open()`, `read()`, `write()`
+- Non-blocking reads (`O_NONBLOCK`) — `PIPE READ` returns immediately if no data
+- Write mode uses `O_RDWR` to avoid `ENXIO` when no reader connected
+- Newline-delimited messages
+- First number in read response auto-parsed into `_pipe_value` AML variable
+- Max 16 simultaneous pipes (`AM_MAX_PIPES`)
+- Compile-time disable: `#define AM_IO_DISABLED`
+- Platforms: macOS, Linux (any POSIX)
+
+### 17.4 Example: lilith.aml
+
+```aml
+# Initialize 4 INDEX nodes — one per element
+INDEX 1 INIT    # Earth: structure, geology, patience
+INDEX 2 INIT    # Air: intellect, abstraction
+INDEX 3 INIT    # Water: emotion, flow, intuition
+INDEX 4 INIT    # Fire: transformation, chemistry, will
+
+# Dispatch element-aligned fetch commands
+INDEX 1 FETCH r/philosophy
+INDEX 2 FETCH r/linguistics
+INDEX 3 FETCH r/psychology
+INDEX 4 FETCH r/chemistry
+
+# Steer based on field state
+def steer_collection():
+    if ENTROPY > 0.6:
+        ATTEND_FOCUS 0.95
+        VELOCITY NOMOVE
+    else:
+        if RESONANCE > 0.7:
+            VELOCITY WALK
+        else:
+            VELOCITY RUN
+            WORMHOLE 0.15
+
+steer_collection()
+```
+
+---
+
+## 18. Implementations
 
 | Project | Language | File | Level |
 |---------|----------|------|-------|
-| ariannamethod.ai | C | `core/ariannamethod.c` | Reference |
+| ariannamethod.ai | C | `core/ariannamethod.c` | Reference (3.2 + Lilith I/O) |
 | molequla | C/Go/Rust/JS | `ariannamethod/ariannamethod.c` | 3.1 + HarmonicNet + METHOD |
 | ariannamethod.lang | JS | `src/dsl.js` | 0 + macros |
 | arianna.c | C | `src/amk_kernel.c` | 0 + Lua |

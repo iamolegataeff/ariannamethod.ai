@@ -11,7 +11,7 @@
 
 A probabilistic programming language for transformer inference. AML compiles field programs to C for real-time logit manipulation — modulating attention, temperature, tunneling, suffering, and memory through 80+ parameters of internal state. Every command maps to a concrete operation on the probability distribution during token generation.
 
-Two files. No dependencies. 3411 lines of C. 250 tests. Janus transformer engine. BLAS-accelerated Delta Voice and NOTORCH. Ships today.
+Two files. No dependencies. 3820 lines of C. 276 tests. Janus transformer engine. BLAS-accelerated Delta Voice, NOTORCH, and Lilith I/O. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -95,8 +95,8 @@ Gamma and delta are orthogonal (cosine similarity = -0.0005). Personality persis
 make              # builds libaml.a
 make BLAS=1       # builds libaml.a with BLAS acceleration
 make janus        # builds libjanus.dylib
-make test         # runs 250 AML tests (scalar)
-make test-blas    # runs 250 AML tests (BLAS-accelerated)
+make test         # runs 276 AML tests (scalar)
+make test-blas    # runs 276 AML tests (BLAS-accelerated)
 make test-all     # AML tests + Janus tests
 ```
 
@@ -493,6 +493,46 @@ cc -Wall -O2 -DUSE_BLAS -c core/ariannamethod.c -o ariannamethod.o -lm -lopenbla
 
 Without `BLAS=1`, everything compiles and works identically — pure scalar C loops, zero dependencies. Same numeric results either way.
 
+## Lilith I/O — Data Infrastructure
+
+Named pipe (FIFO) communication between AML scripts and external processes. AML gains I/O: scripts can steer Go INDEX nodes that crawl, embed, and index data from the outside world.
+
+*"Та, которая была до Евы."*
+
+```aml
+# Initialize INDEX nodes
+INDEX 1 INIT    # Earth domain
+INDEX 2 INIT    # Air domain
+
+# Dispatch fetch commands
+INDEX 1 FETCH r/philosophy
+INDEX 2 FETCH r/linguistics
+
+# Read response
+INDEX 1 STATUS
+
+# Low-level pipe access
+PIPE CREATE /tmp/my_pipe
+PIPE OPEN writer /tmp/my_pipe WRITE
+PIPE WRITE writer "hello 42.5"
+PIPE CLOSE ALL
+```
+
+```c
+// C API
+int   am_pipe_create(const char* path);
+int   am_pipe_open(const char* name, const char* path, int mode);
+int   am_pipe_write(const char* name, const char* message);
+int   am_pipe_read(const char* name, char* buf, int bufsize);
+void  am_pipe_close(const char* name);
+void  am_pipe_close_all(void);
+float am_pipe_last_value(void);
+```
+
+Compile-time disable: `#define AM_IO_DISABLED`. Full example: [`examples/lilith.aml`](examples/lilith.aml).
+
+---
+
 ## Blood — Runtime C Compilation (Level 3)
 
 Compile C code to shared libraries at runtime. Load and call functions via dlsym. No PyTorch. No Go. Pure POSIX.
@@ -597,6 +637,15 @@ float am_gamma_get_blend(void);
 void  am_janus_set(const char* a, const char* b);
 void  am_apply_gamma_to_logits(float* logits, int n);
 
+// Lilith I/O — named pipes
+int            am_pipe_create(const char* path);
+int            am_pipe_open(const char* name, const char* path, int mode);
+int            am_pipe_write(const char* name, const char* message);
+int            am_pipe_read(const char* name, char* buf, int bufsize);
+void           am_pipe_close(const char* name);
+void           am_pipe_close_all(void);
+float          am_pipe_last_value(void);
+
 // Inline queries
 float       am_get_temperature(void);
 float       am_get_destiny_bias(void);
@@ -611,9 +660,9 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (~3400 lines, optional BLAS)
+  ariannamethod.c      Reference implementation (~3800 lines, optional BLAS + Lilith I/O)
   ariannamethod.h      Header with AM_State, Level 2, Blood, Janus API
-  test_aml.c           250 tests (scalar + BLAS validation)
+  test_aml.c           276 tests (scalar + BLAS + Lilith I/O validation)
 janus/
   janus.go             C-exported API — load, generate, callbacks
   lang.go              Auto language detection (Unicode heuristic)
@@ -631,6 +680,7 @@ examples/
   common.aml           Shared macros and functions (INCLUDE example)
   blood.aml            Blood compiler: LoRA, emotions, raw C
   janus_demo.aml       Janus: load model + generate from AML
+  lilith.aml           Lilith: data infrastructure brain — 4 INDEX nodes, steering
 ACCEPTABLE_USE.md      What you may and may not do with AML
 TRADEMARK.md           Use of the Arianna Method name and marks
 Makefile
@@ -674,7 +724,7 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3411 lines of C, 250 tests, Go shared library | C/Go |
+| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3820 lines of C, 276 tests, Go shared library, Lilith I/O | C/Go |
 | [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
 | [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
 
