@@ -61,7 +61,7 @@ The language operates at three levels:
 
 1. **Formalization of field physics** for transformer inference—prophecy, suffering, tunneling, and calendar dynamics as first-class computational concepts
 2. **A complete language specification** with EBNF grammar covering three abstraction levels (commands, control flow, runtime compilation)
-3. **Reference implementation** in 3,409 lines of C code with optional BLAS acceleration, verified by 250 tests
+3. **Reference implementation** in 3,820 lines of C code with optional BLAS acceleration and Lilith I/O, verified by 276 tests
 4. **Empirical validation** across eight production systems processing millions of tokens
 5. **Novel operators** including Delta Voice (personality-language separation), NOTORCH (Hebbian plasticity without backpropagation), Blood (runtime compilation), Gamma/Janus (personality essence and dual-facing field), a 4.C MLP controller (real neural network for seasonal homeostasis), HarmonicNet (weightless neural network via Fourier decomposition), and METHOD (distributed cognition operator)
 

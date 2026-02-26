@@ -241,6 +241,24 @@ Commands for controlling transformer inference when Janus (libjanus) is linked. 
 |---------|--------|-------|---------|-------------|
 | `LORA_ALPHA` | `LORA_ALPHA <float>` | 0–1 | 0 | Delta voice blending. 0=no delta (substrate only), 1=full delta voice |
 
+### 2.16 Lilith I/O — Named Pipes
+
+Low-level pipe commands and high-level INDEX sugar for data infrastructure communication. Disabled with `#define AM_IO_DISABLED`.
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `PIPE CREATE` | `PIPE CREATE <path>` | Create FIFO at path |
+| `PIPE OPEN` | `PIPE OPEN <name> <path> READ\|WRITE` | Open pipe |
+| `PIPE WRITE` | `PIPE WRITE <name> "<message>"` | Write to pipe |
+| `PIPE READ` | `PIPE READ <name>` | Non-blocking read (result in `_pipe_value`) |
+| `PIPE CLOSE` | `PIPE CLOSE <name>\|ALL` | Close pipe(s) |
+| `PIPE LIST` | `PIPE LIST` | List open pipes |
+| `INDEX INIT` | `INDEX <id> INIT` | Create + open cmd/rsp pipe pair |
+| `INDEX FETCH` | `INDEX <id> FETCH <source>` | Send fetch command |
+| `INDEX STATUS` | `INDEX <id> STATUS` | Request + read status |
+| `INDEX STOP` | `INDEX <id> STOP` | Send stop command |
+| `INDEX CLOSE` | `INDEX <id> CLOSE` | Close both pipes |
+
 ---
 
 ## 3. Extension Packs
