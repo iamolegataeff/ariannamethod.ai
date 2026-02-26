@@ -452,6 +452,66 @@ int am_blood_count(void);
 const AM_BloodModule* am_blood_get(int idx);
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// LILITH — I/O subsystem for data infrastructure
+//
+// Named pipe (FIFO) communication between AML scripts and external processes.
+// Designed for Lilith: AML brain steering INDEX nodes (Go binaries) that
+// crawl, embed, and index data from the outside world.
+//
+// "Та, которая была до Евы."
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#ifndef AM_IO_DISABLED
+
+#define AM_MAX_PIPES       16
+#define AM_PIPE_NAME_LEN   32
+#define AM_PIPE_PATH_LEN   256
+#define AM_PIPE_BUF_SIZE   4096
+
+#define AM_PIPE_MODE_READ  0
+#define AM_PIPE_MODE_WRITE 1
+
+typedef struct {
+    char  name[AM_PIPE_NAME_LEN];     // logical name (e.g. "idx1_cmd")
+    char  path[AM_PIPE_PATH_LEN];     // filesystem path (e.g. "/tmp/lilith_idx1_cmd")
+    int   fd;                          // file descriptor (-1 if closed)
+    int   mode;                        // AM_PIPE_MODE_READ or AM_PIPE_MODE_WRITE
+    int   active;                      // 1 = open, 0 = closed/unused
+} AM_Pipe;
+
+// Create a named pipe (FIFO) at path. Returns 0 on success, -1 on error.
+int am_pipe_create(const char* path);
+
+// Open a named pipe. mode: AM_PIPE_MODE_READ or AM_PIPE_MODE_WRITE.
+// Returns pipe index (0..AM_MAX_PIPES-1) or -1 on error.
+int am_pipe_open(const char* name, const char* path, int mode);
+
+// Write a line to a named pipe. Returns bytes written or -1.
+int am_pipe_write(const char* name, const char* message);
+
+// Read a line from a named pipe (non-blocking).
+// Returns bytes read, 0 if nothing available, -1 on error.
+// Result stored in buf (null-terminated).
+int am_pipe_read(const char* name, char* buf, int bufsize);
+
+// Close a named pipe by logical name.
+void am_pipe_close(const char* name);
+
+// Close all open pipes. Call at cleanup.
+void am_pipe_close_all(void);
+
+// Get last value read from pipe (first number parsed from last PIPE READ).
+float am_pipe_last_value(void);
+
+// Get pipe count.
+int am_pipe_count(void);
+
+// Get pipe by index (NULL if out of range or inactive).
+const AM_Pipe* am_pipe_get(int idx);
+
+#endif // AM_IO_DISABLED
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONVENIENCE QUERIES
 // ═══════════════════════════════════════════════════════════════════════════════
 

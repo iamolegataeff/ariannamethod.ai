@@ -35,6 +35,14 @@
 #include <dlfcn.h>   // for dlopen, dlsym, dlclose (Blood compiler)
 #endif
 
+// Lilith I/O — named pipes (FIFO) for data infrastructure
+#ifndef AM_IO_DISABLED
+#include <fcntl.h>     // for open(), O_RDONLY, O_WRONLY, O_NONBLOCK
+#include <unistd.h>    // for read(), write(), close(), unlink()
+#include <sys/stat.h>  // for mkfifo()
+#include <errno.h>     // for EAGAIN, ENXIO
+#endif
+
 // Platform detection for Blood compiler
 #ifdef __APPLE__
   #define AM_BLOOD_EXT ".dylib"
@@ -74,6 +82,14 @@ static AM_BloodModule g_blood_modules[AM_BLOOD_MAX_MODULES];
 static int g_blood_count = 0;
 static char g_blood_dir[256] = {0};
 static char g_blood_cc[64] = {0};
+
+// Lilith I/O globals (named pipes for data infrastructure)
+#ifndef AM_IO_DISABLED
+static AM_Pipe g_pipes[AM_MAX_PIPES];
+static int g_pipe_count = 0;
+static float g_pipe_last_value = 0.0f;
+static char g_pipe_read_buf[AM_PIPE_BUF_SIZE] = {0};
+#endif
 
 // Janus transformer integration (function pointers set by host)
 #ifndef AM_JANUS_DISABLED
@@ -571,6 +587,13 @@ void am_init(void) {
 
   // blood compiler
   am_blood_init();
+
+  // lilith I/O
+#ifndef AM_IO_DISABLED
+  am_pipe_close_all();
+  g_pipe_last_value = 0.0f;
+  g_pipe_read_buf[0] = 0;
+#endif
 }
 
 // enable/disable packs
@@ -1755,6 +1778,183 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
 #endif
 
     // ─────────────────────────────────────────────────────────────────────────
+    // LILITH I/O — named pipes for data infrastructure
+    // "Та, которая была до Евы."
+    // ─────────────────────────────────────────────────────────────────────────
+
+#ifndef AM_IO_DISABLED
+    else if (!strcmp(t, "PIPE")) {
+      // PIPE CREATE <path>               — create FIFO at path
+      // PIPE OPEN <name> <path> <mode>   — open pipe (mode: READ or WRITE)
+      // PIPE WRITE <name> <message>      — write to pipe
+      // PIPE READ <name>                 — read from pipe (non-blocking)
+      // PIPE CLOSE <name>                — close pipe
+      // PIPE CLOSE_ALL                   — close all pipes
+      // PIPE LIST                        — list open pipes
+      char subcmd[32] = {0};
+      char rest[AML_MAX_LINE_LEN] = {0};
+      if (arg) sscanf(arg, "%31s %[^\n]", subcmd, rest);
+      upcase(subcmd);
+
+      if (!strcmp(subcmd, "CREATE")) {
+        // PIPE CREATE /tmp/lilith_idx1
+        char path[AM_PIPE_PATH_LEN] = {0};
+        sscanf(rest, "%255s", path);
+        if (path[0]) {
+          am_pipe_create(path);
+        } else if (ctx) {
+          set_error_at(ctx, lineno, "PIPE CREATE: path required");
+        }
+      }
+      else if (!strcmp(subcmd, "OPEN")) {
+        // PIPE OPEN idx1_cmd /tmp/lilith_idx1_cmd WRITE
+        char pname[AM_PIPE_NAME_LEN] = {0};
+        char path[AM_PIPE_PATH_LEN] = {0};
+        char mode_str[16] = {0};
+        if (sscanf(rest, "%31s %255s %15s", pname, path, mode_str) >= 2) {
+          upcase(mode_str);
+          int mode = AM_PIPE_MODE_READ;
+          if (!strcmp(mode_str, "WRITE") || !strcmp(mode_str, "W"))
+            mode = AM_PIPE_MODE_WRITE;
+          int idx = am_pipe_open(pname, path, mode);
+          if (idx < 0 && ctx)
+            set_error_at(ctx, lineno, "PIPE OPEN failed");
+        } else if (ctx) {
+          set_error_at(ctx, lineno, "PIPE OPEN: name and path required");
+        }
+      }
+      else if (!strcmp(subcmd, "WRITE")) {
+        // PIPE WRITE idx1_cmd "FETCH r/philosophy"
+        char pname[AM_PIPE_NAME_LEN] = {0};
+        char msg[AM_PIPE_BUF_SIZE] = {0};
+        // Parse: first token = name, rest = message (strip quotes)
+        char* space = strchr(rest, ' ');
+        if (space) {
+          int nlen = (int)(space - rest);
+          if (nlen >= AM_PIPE_NAME_LEN) nlen = AM_PIPE_NAME_LEN - 1;
+          memcpy(pname, rest, nlen);
+          pname[nlen] = 0;
+          // Skip space, strip surrounding quotes
+          const char* mp = space + 1;
+          while (*mp == ' ') mp++;
+          if (*mp == '"') {
+            mp++;
+            const char* end = strrchr(mp, '"');
+            if (end) {
+              int mlen = (int)(end - mp);
+              if (mlen >= AM_PIPE_BUF_SIZE) mlen = AM_PIPE_BUF_SIZE - 1;
+              memcpy(msg, mp, mlen);
+              msg[mlen] = 0;
+            } else {
+              snprintf(msg, sizeof(msg), "%s", mp);
+            }
+          } else {
+            snprintf(msg, sizeof(msg), "%s", mp);
+          }
+          am_pipe_write(pname, msg);
+        }
+      }
+      else if (!strcmp(subcmd, "READ")) {
+        // PIPE READ idx1_rsp
+        char pname[AM_PIPE_NAME_LEN] = {0};
+        sscanf(rest, "%31s", pname);
+        if (pname[0]) {
+          int n = am_pipe_read(pname, g_pipe_read_buf, AM_PIPE_BUF_SIZE);
+          if (n > 0) {
+            printf("[LILITH] %s: %s\n", pname, g_pipe_read_buf);
+            // Store numeric value in AML variable _pipe_value if ctx exists
+            if (ctx && ctx->call_depth > 0) {
+              symtab_set(&ctx->locals[ctx->call_depth - 1],
+                         "_pipe_value", g_pipe_last_value);
+            } else if (ctx) {
+              symtab_set(&ctx->globals, "_pipe_value", g_pipe_last_value);
+            }
+          }
+        }
+      }
+      else if (!strcmp(subcmd, "CLOSE")) {
+        char pname[AM_PIPE_NAME_LEN] = {0};
+        sscanf(rest, "%31s", pname);
+        upcase(pname);
+        if (!strcmp(pname, "ALL") || !strcmp(rest, "ALL")) {
+          am_pipe_close_all();
+        } else {
+          // Restore original case for name lookup
+          sscanf(rest, "%31s", pname);
+          am_pipe_close(pname);
+        }
+      }
+      else if (!strcmp(subcmd, "LIST")) {
+        printf("[LILITH] pipes (%d open):\n", am_pipe_count());
+        for (int i = 0; i < g_pipe_count; i++) {
+          if (g_pipes[i].active) {
+            printf("[LILITH]   %s → %s (%s)\n",
+                   g_pipes[i].name, g_pipes[i].path,
+                   g_pipes[i].mode == AM_PIPE_MODE_READ ? "READ" : "WRITE");
+          }
+        }
+      }
+    }
+
+    else if (!strcmp(t, "INDEX")) {
+      // INDEX <id> <subcmd> [args]  — high-level INDEX node management
+      // Sugar over PIPE commands. Uses convention:
+      //   pipe name = "idx<id>_cmd" (write) / "idx<id>_rsp" (read)
+      //   pipe path = "/tmp/lilith_idx<id>_cmd" / "/tmp/lilith_idx<id>_rsp"
+      char id_str[8] = {0};
+      char subcmd2[32] = {0};
+      char irest[AML_MAX_LINE_LEN] = {0};
+      if (arg) sscanf(arg, "%7s %31s %[^\n]", id_str, subcmd2, irest);
+      upcase(subcmd2);
+
+      if (id_str[0]) {
+        // Build pipe names from INDEX id
+        char cmd_name[AM_PIPE_NAME_LEN];
+        char rsp_name[AM_PIPE_NAME_LEN];
+        char cmd_path[AM_PIPE_PATH_LEN];
+        char rsp_path[AM_PIPE_PATH_LEN];
+        snprintf(cmd_name, sizeof(cmd_name), "idx%s_cmd", id_str);
+        snprintf(rsp_name, sizeof(rsp_name), "idx%s_rsp", id_str);
+        snprintf(cmd_path, sizeof(cmd_path), "/tmp/lilith_idx%s_cmd", id_str);
+        snprintf(rsp_path, sizeof(rsp_path), "/tmp/lilith_idx%s_rsp", id_str);
+
+        if (!strcmp(subcmd2, "INIT")) {
+          // INDEX 1 INIT — create pipes and open them
+          am_pipe_create(cmd_path);
+          am_pipe_create(rsp_path);
+          am_pipe_open(cmd_name, cmd_path, AM_PIPE_MODE_WRITE);
+          am_pipe_open(rsp_name, rsp_path, AM_PIPE_MODE_READ);
+          printf("[LILITH] INDEX %s initialized\n", id_str);
+        }
+        else if (!strcmp(subcmd2, "FETCH")) {
+          // INDEX 1 FETCH r/philosophy — tell index node to fetch
+          char fetch_cmd[AM_PIPE_BUF_SIZE];
+          snprintf(fetch_cmd, sizeof(fetch_cmd), "FETCH %s", irest);
+          am_pipe_write(cmd_name, fetch_cmd);
+        }
+        else if (!strcmp(subcmd2, "STATUS")) {
+          // INDEX 1 STATUS — request + read status
+          am_pipe_write(cmd_name, "STATUS");
+          // Try reading response (might not be immediate)
+          int n = am_pipe_read(rsp_name, g_pipe_read_buf, AM_PIPE_BUF_SIZE);
+          if (n > 0) {
+            printf("[LILITH] INDEX %s status: %s\n", id_str, g_pipe_read_buf);
+          } else {
+            printf("[LILITH] INDEX %s: no response yet\n", id_str);
+          }
+        }
+        else if (!strcmp(subcmd2, "STOP")) {
+          am_pipe_write(cmd_name, "STOP");
+        }
+        else if (!strcmp(subcmd2, "CLOSE")) {
+          am_pipe_close(cmd_name);
+          am_pipe_close(rsp_name);
+        }
+      }
+    }
+#endif // AM_IO_DISABLED
+
+    // ─────────────────────────────────────────────────────────────────────────
     // UNKNOWN COMMANDS — ignored intentionally (future-proof + vibe)
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -2867,6 +3067,215 @@ int am_blood_compile_emotion(const char* name, float valence, float arousal) {
 
     return am_blood_compile(safe, code);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LILITH — I/O subsystem (named pipes for data infrastructure)
+//
+// "Та, которая была до Евы."
+// Infra that existed before the human intervened.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#ifndef AM_IO_DISABLED
+
+// Find pipe by logical name. Returns index or -1.
+static int pipe_find(const char* name) {
+    for (int i = 0; i < g_pipe_count; i++) {
+        if (g_pipes[i].active && strcmp(g_pipes[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+// Find first free pipe slot. Returns index or -1.
+static int pipe_find_free(void) {
+    // Reuse inactive slots first
+    for (int i = 0; i < g_pipe_count; i++) {
+        if (!g_pipes[i].active) return i;
+    }
+    if (g_pipe_count < AM_MAX_PIPES) return g_pipe_count++;
+    return -1;
+}
+
+int am_pipe_create(const char* path) {
+    if (!path || !path[0]) return -1;
+
+    // Remove existing file/pipe at path first (idempotent)
+    unlink(path);
+
+    if (mkfifo(path, 0666) != 0) {
+        // EEXIST is OK — pipe already exists
+        if (errno != EEXIST) {
+            printf("[LILITH] mkfifo(%s) failed: %s\n", path, strerror(errno));
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int am_pipe_open(const char* name, const char* path, int mode) {
+    if (!name || !name[0] || !path || !path[0]) return -1;
+
+    // Check if already open with this name
+    int existing = pipe_find(name);
+    if (existing >= 0) {
+        printf("[LILITH] pipe '%s' already open\n", name);
+        return existing;
+    }
+
+    int slot = pipe_find_free();
+    if (slot < 0) {
+        printf("[LILITH] max pipes reached (%d)\n", AM_MAX_PIPES);
+        return -1;
+    }
+
+    int flags;
+    if (mode == AM_PIPE_MODE_READ) {
+        flags = O_RDONLY | O_NONBLOCK;
+    } else {
+        // O_WRONLY + O_NONBLOCK on FIFO returns ENXIO if no reader yet.
+        // Use O_RDWR to avoid blocking — works on both macOS and Linux.
+        flags = O_RDWR | O_NONBLOCK;
+    }
+
+    int fd = open(path, flags);
+    if (fd < 0) {
+        printf("[LILITH] open(%s) failed: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    snprintf(g_pipes[slot].name, AM_PIPE_NAME_LEN, "%.31s", name);
+    snprintf(g_pipes[slot].path, AM_PIPE_PATH_LEN, "%.255s", path);
+    g_pipes[slot].fd = fd;
+    g_pipes[slot].mode = mode;
+    g_pipes[slot].active = 1;
+
+    printf("[LILITH] pipe '%s' opened (%s, %s)\n", name, path,
+           mode == AM_PIPE_MODE_READ ? "READ" : "WRITE");
+    return slot;
+}
+
+int am_pipe_write(const char* name, const char* message) {
+    if (!name || !message) return -1;
+
+    int idx = pipe_find(name);
+    if (idx < 0) {
+        printf("[LILITH] pipe '%s' not found\n", name);
+        return -1;
+    }
+    if (!g_pipes[idx].active || g_pipes[idx].fd < 0) return -1;
+
+    // Append newline as message delimiter
+    int mlen = (int)strlen(message);
+    char buf[AM_PIPE_BUF_SIZE];
+    if (mlen + 2 > AM_PIPE_BUF_SIZE) mlen = AM_PIPE_BUF_SIZE - 2;
+    memcpy(buf, message, mlen);
+    buf[mlen] = '\n';
+    buf[mlen + 1] = 0;
+
+    ssize_t n = write(g_pipes[idx].fd, buf, mlen + 1);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            printf("[LILITH] pipe '%s' write: no reader (EAGAIN)\n", name);
+            return 0;
+        }
+        printf("[LILITH] pipe '%s' write error: %s\n", name, strerror(errno));
+        return -1;
+    }
+    return (int)n;
+}
+
+int am_pipe_read(const char* name, char* buf, int bufsize) {
+    if (!name || !buf || bufsize <= 0) return -1;
+
+    int idx = pipe_find(name);
+    if (idx < 0) {
+        printf("[LILITH] pipe '%s' not found\n", name);
+        return -1;
+    }
+    if (!g_pipes[idx].active || g_pipes[idx].fd < 0) return -1;
+
+    ssize_t n = read(g_pipes[idx].fd, buf, bufsize - 1);
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            buf[0] = 0;
+            return 0;  // nothing available (non-blocking)
+        }
+        printf("[LILITH] pipe '%s' read error: %s\n", name, strerror(errno));
+        buf[0] = 0;
+        return -1;
+    }
+    if (n == 0) {
+        buf[0] = 0;
+        return 0;  // EOF / no data
+    }
+
+    buf[n] = 0;
+    // Strip trailing newline
+    if (n > 0 && buf[n - 1] == '\n') buf[--n] = 0;
+
+    // Parse first number found anywhere in response into g_pipe_last_value
+    // Scans forward until a digit or sign-before-digit is found
+    {
+        const char* p = buf;
+        while (*p) {
+            if (isdigit((unsigned char)*p) ||
+                ((*p == '-' || *p == '+' || *p == '.') && isdigit((unsigned char)p[1]))) {
+                char* endptr = NULL;
+                float val = strtof(p, &endptr);
+                if (endptr != p) {
+                    g_pipe_last_value = val;
+                    break;
+                }
+            }
+            p++;
+        }
+    }
+
+    return (int)n;
+}
+
+void am_pipe_close(const char* name) {
+    int idx = pipe_find(name);
+    if (idx < 0) return;
+
+    if (g_pipes[idx].fd >= 0) {
+        close(g_pipes[idx].fd);
+    }
+    printf("[LILITH] pipe '%s' closed\n", g_pipes[idx].name);
+    g_pipes[idx].fd = -1;
+    g_pipes[idx].active = 0;
+    g_pipes[idx].name[0] = 0;
+}
+
+void am_pipe_close_all(void) {
+    for (int i = 0; i < g_pipe_count; i++) {
+        if (g_pipes[i].active) {
+            if (g_pipes[i].fd >= 0) close(g_pipes[i].fd);
+            g_pipes[i].fd = -1;
+            g_pipes[i].active = 0;
+        }
+    }
+    g_pipe_count = 0;
+    printf("[LILITH] all pipes closed\n");
+}
+
+float am_pipe_last_value(void) { return g_pipe_last_value; }
+
+int am_pipe_count(void) {
+    int count = 0;
+    for (int i = 0; i < g_pipe_count; i++) {
+        if (g_pipes[i].active) count++;
+    }
+    return count;
+}
+
+const AM_Pipe* am_pipe_get(int idx) {
+    if (idx < 0 || idx >= g_pipe_count) return NULL;
+    if (!g_pipes[idx].active) return NULL;
+    return &g_pipes[idx];
+}
+
+#endif // AM_IO_DISABLED
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STEP — advance field physics (call each frame)
