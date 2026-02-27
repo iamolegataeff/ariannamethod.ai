@@ -1039,7 +1039,9 @@ void am_tape_clear(void) {
     }
     g_tape.count = 0;
     g_tape.active = 0;
-    // NOTE: adam states and n_params survive clear — they persist across steps
+    // Reset n_params so TAPE PARAM re-registers into same adam slots
+    // adam[].m, adam[].v, adam[].t survive — they are reused, not reallocated
+    g_tape.n_params = 0;
 }
 
 // Full tape reset — frees ALL resources including params and adam states

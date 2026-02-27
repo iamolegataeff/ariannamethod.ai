@@ -2274,8 +2274,8 @@ int main(void) {
         am_exec("TAPE CLEAR");
         ASSERT(tape->active == 0, "tape inactive after CLEAR");
         ASSERT(tape->count == 0, "tape count 0 after CLEAR");
-        // n_params persists across clear
-        ASSERT(tape->n_params == 1, "n_params persists across CLEAR");
+        // n_params resets on CLEAR (adam states survive, n_params re-registers)
+        ASSERT(tape->n_params == 0, "n_params resets on CLEAR");
     }
 
     printf("\n── Phase 3: tape auto-records operations ──\n");
