@@ -1703,6 +1703,8 @@ void am_tape_chuck_step(float lr, float loss_val) {
     if (!cs->initialized) {
         cs->dampen = 1.0f;
         cs->noise = 0.0f;
+        cs->lr_scale = 1.0f;
+        cs->best_macro = 1e9f;
         cs->initialized = 1;
     }
     // EMA smoothing: filters batch-to-batch noise for mini-batch SGD
@@ -1742,6 +1744,27 @@ void am_tape_chuck_step(float lr, float loss_val) {
     // Clamp global dampen
     if (cs->dampen < CHUCK_DAMP_LO) cs->dampen = CHUCK_DAMP_LO;
     if (cs->dampen > CHUCK_DAMP_HI) cs->dampen = CHUCK_DAMP_HI;
+
+    // ── Level 9: Multi-scale awareness (macro patience) ──
+    // Slow EMA (α=0.001) tracks epoch-scale loss trend.
+    // Every CHUCK_MACRO_INT steps: patience check → LR decay if stagnant.
+    cs->global_step++;
+    if (cs->macro_ema == 0.0f) cs->macro_ema = loss_val;
+    else cs->macro_ema = 0.999f * cs->macro_ema + 0.001f * loss_val;
+
+    if (cs->global_step % CHUCK_MACRO_INT == 0 && cs->global_step > CHUCK_WINDOW) {
+        if (cs->macro_ema > cs->best_macro * 0.999f) {
+            cs->macro_stag++;
+            if (cs->macro_stag >= CHUCK_MACRO_PAT) {
+                cs->lr_scale *= CHUCK_MACRO_DECAY;
+                if (cs->lr_scale < 0.05f) cs->lr_scale = 0.05f;
+                cs->macro_stag = 0;
+            }
+        } else {
+            cs->best_macro = cs->macro_ema;
+            cs->macro_stag = 0;
+        }
+    }
 
     float global_lambda = cs->dampen;
     float noise_mag = cs->noise;
@@ -1805,7 +1828,7 @@ void am_tape_chuck_step(float lr, float loss_val) {
 
         // ── Adam update with Chuck modulation ──
         float param_lambda = cp->dampen;
-        float effective_lr = lr * global_lambda * param_lambda;
+        float effective_lr = lr * global_lambda * param_lambda * cs->lr_scale;
 
         as->t++;
         for (int j = 0; j < n; j++) {

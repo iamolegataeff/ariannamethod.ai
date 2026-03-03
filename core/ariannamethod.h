@@ -592,7 +592,7 @@ typedef struct {
 // Level 3: Stagnation escape (η)      — noise injection after plateau
 
 #define CHUCK_WINDOW    16
-#define CHUCK_DAMP_LO   0.1f
+#define CHUCK_DAMP_LO   0.3f
 #define CHUCK_DAMP_HI   2.0f
 #define CHUCK_DAMP_DOWN  0.95f
 #define CHUCK_DAMP_UP    1.05f
@@ -600,6 +600,9 @@ typedef struct {
 #define CHUCK_STAG_STEPS  8
 #define CHUCK_NOISE_MAG   0.001f
 #define CHUCK_FREEZE_THRESH 0.01f
+#define CHUCK_MACRO_INT   500
+#define CHUCK_MACRO_PAT   3
+#define CHUCK_MACRO_DECAY 0.5f
 
 typedef struct {
     float grad_hist[CHUCK_WINDOW];  // gradient norm history (ring buffer)
@@ -614,7 +617,12 @@ typedef struct {
     float loss_hist[CHUCK_WINDOW];  // loss history (ring buffer)
     float dampen;                   // global λ multiplier
     float noise;                    // stagnation noise η magnitude
-    float loss_ema;                 // EMA-smoothed loss (batch noise filter)
+    float loss_ema;                 // EMA-smoothed loss (batch noise filter, α=0.01)
+    float macro_ema;                // slow EMA (α=0.001) for epoch-scale trend
+    float best_macro;               // best macro_ema seen (for patience)
+    float lr_scale;                 // macro LR multiplier (patience decay)
+    int   macro_stag;               // macro patience counter
+    int   global_step;              // total steps (for macro interval check)
     int   pos;                      // ring buffer write position
     int   full;                     // buffer fully populated?
     int   stag;                     // global stagnation counter
