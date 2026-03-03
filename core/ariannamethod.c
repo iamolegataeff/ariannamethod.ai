@@ -30,6 +30,7 @@
 #include <stdio.h>   // for sscanf in LAW command parsing
 #include <strings.h> // for strcasecmp
 #include <stddef.h>  // for offsetof
+#include <stdint.h>  // for uint32_t (Chuck RNG)
 #include <time.h>    // for real calendar computation
 #ifdef _OPENMP
 #include <omp.h>
@@ -1063,6 +1064,7 @@ static void am_tape_destroy(void) {
         if (g_tape.adam[i].v) { am_array_free(g_tape.adam[i].v); g_tape.adam[i].v = NULL; }
         g_tape.adam[i].t = 0;
     }
+    // memset zeros everything including chuck state
     memset(&g_tape, 0, sizeof(g_tape));
 }
 
@@ -1659,6 +1661,163 @@ void am_tape_adam_step(float lr) {
             float m_hat = as->m->data[j] / (1.0f - powf(beta1, (float)as->t));
             float v_hat = as->v->data[j] / (1.0f - powf(beta2, (float)as->t));
             e->output->data[j] -= lr * m_hat / (sqrtf(v_hat) + eps);
+        }
+        param_idx++;
+    }
+}
+
+// ── Chuck optimizer step ──────────────────────────────────────────────────────
+// Self-aware Adam: θ -= (α × λ × λ_l) × m̂/(√v̂ + ε) + η
+// Requires loss_val from the current step to track trends.
+
+static float chuck_ring_avg(const float* buf, int pos, int full, int start, int count) {
+    // Average 'count' entries starting from 'start' in ring buffer
+    int len = full ? CHUCK_WINDOW : pos;
+    if (len == 0 || count == 0) return 0.0f;
+    float sum = 0.0f;
+    int actual = 0;
+    for (int i = 0; i < count && i < len; i++) {
+        int idx = (start + i) % CHUCK_WINDOW;
+        if (idx < len || full) { sum += buf[idx]; actual++; }
+    }
+    return actual > 0 ? sum / actual : 0.0f;
+}
+
+// Simple xorshift32 for stagnation noise (no stdlib dependency)
+static uint32_t chuck_rng_state = 2463534242u;
+static float chuck_randn(void) {
+    // Box-Muller-ish from uniform via xorshift
+    chuck_rng_state ^= chuck_rng_state << 13;
+    chuck_rng_state ^= chuck_rng_state >> 17;
+    chuck_rng_state ^= chuck_rng_state << 5;
+    float u = (float)(chuck_rng_state) / 4294967296.0f;
+    // Approximate Gaussian: 12 uniforms - 6 (central limit), simplified to 2u-1
+    return 2.0f * u - 1.0f;
+}
+
+void am_tape_chuck_step(float lr, float loss_val) {
+    float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-8f;
+
+    // ── Level 1: Global loss trend → λ ──
+    AM_ChuckState* cs = &g_tape.chuck;
+    if (!cs->initialized) {
+        cs->dampen = 1.0f;
+        cs->noise = 0.0f;
+        cs->initialized = 1;
+    }
+    // EMA smoothing: filters batch-to-batch noise for mini-batch SGD
+    if (cs->loss_ema == 0.0f) cs->loss_ema = loss_val;
+    else cs->loss_ema = 0.99f * cs->loss_ema + 0.01f * loss_val;
+    // Record smoothed loss into ring buffer
+    cs->loss_hist[cs->pos] = cs->loss_ema;
+    cs->pos = (cs->pos + 1) % CHUCK_WINDOW;
+    if (cs->pos == 0) cs->full = 1;
+
+    int len = cs->full ? CHUCK_WINDOW : cs->pos;
+    if (len >= 8) {
+        // Compare recent quarter vs oldest quarter
+        int q = len / 4;
+        if (q < 1) q = 1;
+        int old_start = cs->full ? ((cs->pos) % CHUCK_WINDOW) : 0;
+        int recent_start = cs->full ? ((cs->pos - q + CHUCK_WINDOW) % CHUCK_WINDOW)
+                                    : (cs->pos - q);
+        float old_avg = chuck_ring_avg(cs->loss_hist, cs->pos, cs->full, old_start, q);
+        float recent_avg = chuck_ring_avg(cs->loss_hist, cs->pos, cs->full, recent_start, q);
+
+        if (old_avg > eps) {
+            float trend = (recent_avg - old_avg) / old_avg;
+            if (trend > 0.01f)  cs->dampen *= CHUCK_DAMP_DOWN; // loss rising → dampen
+            if (trend < -0.05f) cs->dampen *= CHUCK_DAMP_UP;   // loss falling → boost
+
+            // ── Level 3: Stagnation escape ──
+            if (fabsf(trend) < CHUCK_STAG_THRESH) {
+                cs->stag++;
+                if (cs->stag >= CHUCK_STAG_STEPS) cs->noise = CHUCK_NOISE_MAG;
+            } else {
+                cs->stag = 0;
+                cs->noise = 0.0f;
+            }
+        }
+    }
+    // Clamp global dampen
+    if (cs->dampen < CHUCK_DAMP_LO) cs->dampen = CHUCK_DAMP_LO;
+    if (cs->dampen > CHUCK_DAMP_HI) cs->dampen = CHUCK_DAMP_HI;
+
+    float global_lambda = cs->dampen;
+    float noise_mag = cs->noise;
+
+    // ── Level 2: Per-param gradient norm → λ_l + freeze + Adam update ──
+    int param_idx = 0;
+    for (int i = 0; i < g_tape.count && param_idx < g_tape.n_params; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->grad) continue;
+
+        AM_AdamState* as = &g_tape.adam[param_idx];
+        AM_ChuckParamState* cp = &g_tape.chuck_params[param_idx];
+
+        // Initialize per-param state on first encounter
+        if (cp->dampen == 0.0f) cp->dampen = 1.0f;
+
+        // Check frozen
+        if (cp->frozen) { param_idx++; continue; }
+
+        if (!as->m || !as->v) { param_idx++; continue; }
+
+        // Compute gradient norm for this param
+        int n = e->output->len;
+        if (as->m->len < n) n = as->m->len;
+        float gnorm = 0.0f;
+        for (int j = 0; j < n; j++) gnorm += e->grad->data[j] * e->grad->data[j];
+        gnorm = sqrtf(gnorm);
+
+        // Record grad norm into per-param ring buffer
+        cp->grad_hist[cp->pos] = gnorm;
+        cp->pos = (cp->pos + 1) % CHUCK_WINDOW;
+        if (cp->pos == 0) cp->full = 1;
+
+        int plen = cp->full ? CHUCK_WINDOW : cp->pos;
+        if (plen >= 8) {
+            int q = plen / 4;
+            if (q < 1) q = 1;
+            int old_start = cp->full ? ((cp->pos) % CHUCK_WINDOW) : 0;
+            int recent_start = cp->full ? ((cp->pos - q + CHUCK_WINDOW) % CHUCK_WINDOW)
+                                        : (cp->pos - q);
+            float old_gn = chuck_ring_avg(cp->grad_hist, cp->pos, cp->full, old_start, q);
+            float recent_gn = chuck_ring_avg(cp->grad_hist, cp->pos, cp->full, recent_start, q);
+
+            if (old_gn > eps) {
+                float gtrend = (recent_gn - old_gn) / old_gn;
+                if (gtrend > 0.01f)  cp->dampen *= CHUCK_DAMP_DOWN;
+                if (gtrend < -0.05f) cp->dampen *= CHUCK_DAMP_UP;
+            }
+
+            // Freeze check: grad norm tiny for CHUCK_STAG_STEPS consecutive
+            if (gnorm < CHUCK_FREEZE_THRESH) {
+                cp->stag++;
+                if (cp->stag >= CHUCK_STAG_STEPS) cp->frozen = 1;
+            } else {
+                cp->stag = 0;
+            }
+
+            if (cp->dampen < CHUCK_DAMP_LO) cp->dampen = CHUCK_DAMP_LO;
+            if (cp->dampen > CHUCK_DAMP_HI) cp->dampen = CHUCK_DAMP_HI;
+        }
+
+        // ── Adam update with Chuck modulation ──
+        float param_lambda = cp->dampen;
+        float effective_lr = lr * global_lambda * param_lambda;
+
+        as->t++;
+        for (int j = 0; j < n; j++) {
+            float g = e->grad->data[j];
+            as->m->data[j] = beta1 * as->m->data[j] + (1.0f - beta1) * g;
+            as->v->data[j] = beta2 * as->v->data[j] + (1.0f - beta2) * g * g;
+            float m_hat = as->m->data[j] / (1.0f - powf(beta1, (float)as->t));
+            float v_hat = as->v->data[j] / (1.0f - powf(beta2, (float)as->t));
+            float update = effective_lr * m_hat / (sqrtf(v_hat) + eps);
+            // Stagnation noise η
+            if (noise_mag > 0.0f) update += noise_mag * chuck_randn();
+            e->output->data[j] -= update;
         }
         param_idx++;
     }
@@ -3279,6 +3438,18 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
         float lr = 0.001f;
         if (rest[0]) lr = ctx_float(ctx, rest);
         am_tape_adam_step(lr);
+      }
+      else if (!strcmp(subcmd, "CHUCK_STEP") || !strcmp(subcmd, "CHUCK")) {
+        // TAPE CHUCK_STEP <lr> <loss_var> — self-aware optimizer
+        // TAPE CHUCK <lr> <loss_var>
+        char arg1[AML_MAX_NAME] = {0};
+        char arg2[AML_MAX_NAME] = {0};
+        sscanf(rest, "%31s %31s", arg1, arg2);
+        float lr = 0.001f;
+        float loss_val = 0.0f;
+        if (arg1[0]) lr = ctx_float(ctx, arg1);
+        if (arg2[0] && ctx) loss_val = ctx_float(ctx, arg2);
+        am_tape_chuck_step(lr, loss_val);
       }
       else if (!strcmp(subcmd, "PARAM")) {
         // TAPE PARAM <var_name> — register variable as trainable parameter

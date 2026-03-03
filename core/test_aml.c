@@ -3450,6 +3450,83 @@ int main(void) {
         ASSERT(rc == 0, "multi-head post-training forward succeeds");
     }
 
+    // ── CHUCK OPTIMIZER ─────────────────────────────────────────────────
+    printf("\n── Chuck: TAPE CHUCK_STEP — basic parameter update ──\n");
+    {
+        am_init();
+        int rc = am_exec(
+            "w = [1.0, 2.0, 3.0]\n"
+            "TAPE START\n"
+            "TAPE PARAM w\n"
+            "y = scale(w, 2.0)\n"
+            "TAPE BACKWARD y\n"
+            "TAPE CHUCK_STEP 0.01 y\n"
+        );
+        ASSERT(rc == 0, "chuck step executes");
+        AM_Tape* tape = am_tape_get();
+        AM_TapeEntry* ew = &tape->entries[0];
+        // Same as Adam first step: w should decrease (grad = [2,2,2], positive → decrease)
+        ASSERT(ew->output->data[0] < 1.0f, "chuck: w[0] decreased");
+        ASSERT(ew->output->data[1] < 2.0f, "chuck: w[1] decreased");
+        ASSERT(ew->output->data[2] < 3.0f, "chuck: w[2] decreased");
+        am_exec("TAPE CLEAR");
+    }
+
+    printf("\n── Chuck: convergence — loss decreases over steps ──\n");
+    {
+        am_init();
+        // Train 5 steps with Chuck, verify loss decreases
+        int rc = am_exec(
+            "W = matrix(4, 3, 0.1)\n"
+            "x = [1.0, 0.5, 0.2]\n"
+            "step = 0\n"
+            "while step < 5:\n"
+            "    TAPE START\n"
+            "    TAPE PARAM W\n"
+            "    lg = matvec(W, x)\n"
+            "    lo = cross_entropy(lg, 2)\n"
+            "    if step < 1:\n"
+            "        PROPHECY lo[0] * 10\n"
+            "    DESTINY lo[0]\n"
+            "    TAPE BACKWARD lo\n"
+            "    TAPE CHUCK_STEP 0.1 lo\n"
+            "    TAPE CLEAR\n"
+            "    step = step + 1\n"
+        );
+        ASSERT(rc == 0, "chuck convergence loop executes");
+        AM_State* s = am_get_state();
+        float first_loss_approx = (float)s->prophecy / 10.0f;
+        float last_loss = s->destiny;
+        char msg[128];
+        snprintf(msg, sizeof(msg), "chuck converged: first~%.2f last=%.4f", first_loss_approx, last_loss);
+        ASSERT(last_loss < first_loss_approx || last_loss < 0.95f, msg);
+    }
+
+    printf("\n── Chuck: chuck state survives TAPE CLEAR ──\n");
+    {
+        am_init();
+        // Two steps — chuck dampen/loss_hist should persist across TAPE CLEAR
+        int rc = am_exec(
+            "w = [1.0, 2.0, 3.0]\n"
+            "TAPE START\n"
+            "TAPE PARAM w\n"
+            "y = scale(w, 2.0)\n"
+            "TAPE BACKWARD y\n"
+            "TAPE CHUCK_STEP 0.01 y\n"
+            "TAPE CLEAR\n"
+            "TAPE START\n"
+            "TAPE PARAM w\n"
+            "y2 = scale(w, 2.0)\n"
+            "TAPE BACKWARD y2\n"
+            "TAPE CHUCK_STEP 0.01 y2\n"
+        );
+        ASSERT(rc == 0, "chuck survives tape clear");
+        AM_Tape* tape = am_tape_get();
+        ASSERT(tape->chuck.initialized == 1, "chuck state initialized after steps");
+        ASSERT(tape->chuck.pos >= 2, "chuck recorded 2+ loss values");
+        am_exec("TAPE CLEAR");
+    }
+
     // ── LILITH I/O ──────────────────────────────────────────────────────
 #ifndef AM_IO_DISABLED
     printf("\n── Lilith I/O: PIPE CREATE + OPEN + WRITE + READ ──\n");

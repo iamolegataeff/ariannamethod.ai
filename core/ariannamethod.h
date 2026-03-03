@@ -585,6 +585,42 @@ typedef struct {
     int       t;            // timestep counter
 } AM_AdamState;
 
+// Chuck optimizer — self-aware Adam (github.com/ariannamethod/chuck-optimizer)
+// θ -= (α × λ × λ_l) × m̂/(√v̂ + ε) + η
+// Level 1: Global loss trend (λ)      — 16-step window, dampen/boost
+// Level 2: Per-param grad norm (λ_l)  — per-param modulation + freeze
+// Level 3: Stagnation escape (η)      — noise injection after plateau
+
+#define CHUCK_WINDOW    16
+#define CHUCK_DAMP_LO   0.1f
+#define CHUCK_DAMP_HI   2.0f
+#define CHUCK_DAMP_DOWN  0.95f
+#define CHUCK_DAMP_UP    1.05f
+#define CHUCK_STAG_THRESH 0.001f
+#define CHUCK_STAG_STEPS  8
+#define CHUCK_NOISE_MAG   0.001f
+#define CHUCK_FREEZE_THRESH 0.01f
+
+typedef struct {
+    float grad_hist[CHUCK_WINDOW];  // gradient norm history (ring buffer)
+    float dampen;                   // per-param λ_l multiplier
+    int   frozen;                   // 1 = param converged, skip updates
+    int   pos;                      // ring buffer write position
+    int   full;                     // buffer fully populated?
+    int   stag;                     // stagnation counter for this param
+} AM_ChuckParamState;
+
+typedef struct {
+    float loss_hist[CHUCK_WINDOW];  // loss history (ring buffer)
+    float dampen;                   // global λ multiplier
+    float noise;                    // stagnation noise η magnitude
+    float loss_ema;                 // EMA-smoothed loss (batch noise filter)
+    int   pos;                      // ring buffer write position
+    int   full;                     // buffer fully populated?
+    int   stag;                     // global stagnation counter
+    int   initialized;              // 1 after first loss recorded
+} AM_ChuckState;
+
 typedef struct {
     AM_TapeEntry entries[AM_TAPE_MAX_ENTRIES];
     int          count;
@@ -593,6 +629,10 @@ typedef struct {
     // Parameter registry for Adam
     AM_AdamState adam[AM_TAPE_MAX_PARAMS];
     int          n_params;
+
+    // Chuck optimizer state (survives TAPE CLEAR, same as Adam)
+    AM_ChuckState      chuck;
+    AM_ChuckParamState chuck_params[AM_TAPE_MAX_PARAMS];
 } AM_Tape;
 
 // Tape API
@@ -604,6 +644,7 @@ int  am_tape_record3(AM_Array* output, int op, int p1, int p2, int p3, float aux
 int  am_tape_record_param(AM_Array* param);
 void am_tape_backward(int loss_idx);
 void am_tape_adam_step(float lr);
+void am_tape_chuck_step(float lr, float loss_val);
 AM_Tape* am_tape_get(void);
 
 // ═══════════════════════════════════════════════════════════════════════════════
