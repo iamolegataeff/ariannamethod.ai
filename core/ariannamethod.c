@@ -4164,6 +4164,13 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             float* W = vw->array->data;
             float* X = vx->array->data;
             float* Y = out->data;
+#ifdef USE_BLAS
+            // BLAS batch: Y(T,out) = X(T,in) * W^T(in,out)
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        T, out_dim, in_dim,
+                        1.0f, X, in_dim, W, in_dim,
+                        0.0f, Y, out_dim);
+#else
             #ifdef _OPENMP
             #pragma omp parallel for schedule(static) if(T * out_dim > 4096)
             #endif
@@ -4177,6 +4184,7 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
                     y_t[i] = s;
                 }
             }
+#endif
             if (am_tape_is_active())
                 am_tape_record3(out, AM_OP_SEQ_MATVEC,
                     tape_ensure_entry(vw->array), tape_ensure_entry(vx->array), -1,
