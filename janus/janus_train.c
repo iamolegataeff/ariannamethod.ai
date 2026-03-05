@@ -43,6 +43,7 @@ static void trainlog(const char* fmt, ...);
 typedef struct {
     int    vocab_size;
     int    n_embd;
+    int    hidden_dim;    // FFN hidden dimension (SwiGLU 2.67x n_embd)
     int    n_heads;
     int    n_layers;
     int    seq_len;
@@ -50,22 +51,21 @@ typedef struct {
     int    total_steps;
     int    log_every;
     int    save_every;
-    int    evolve_every;  // check tokenizer evolution
+    int    evolve_every;
     char   data_path[512];
     char   model_path[512];
     char   resume_path[512];
     char   log_path[512];
-    // BPE config
     long   bpe_after;
     int    bpe_merges;
     long   bpe_retrain;
 } TrainConfig;
 
-// ═══════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════
-// Auto-download training data from HuggingFace (FineWeb-Edu)
-// Zero Python. Zero pip. Just curl + C.
-// ═══════════════════════════════════════════════════════════════════
+// Compute SwiGLU hidden_dim: (n_embd * 8/3) rounded up to multiple of 16
+static int compute_hidden_dim(int n_embd) {
+    int h = (n_embd * 8) / 3;
+    return (h + 15) & ~15;  // round up to 16
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Auto-download training data from HuggingFace (FineWeb-Edu)
@@ -76,11 +76,10 @@ typedef struct {
 #define DL_HF_DATASET "HuggingFaceFW/fineweb-edu"
 #define DL_HF_CONFIG  "sample-10BT"
 #define DL_HF_SPLIT   "train"
-#define DL_CHUNK_SIZE  100    // rows per request
-#define DL_TOTAL_ROWS  5000  // total rows to fetch
-#define DL_MIN_SIZE    100000 // 100KB minimum
+#define DL_CHUNK_SIZE  100
+#define DL_TOTAL_ROWS  5000
+#define DL_MIN_SIZE    100000
 
-// Extract "text":"..." fields from HuggingFace JSON response
 static long hf_extract_texts(const char* json, long json_len, FILE* out) {
     long total = 0;
     const char* p = json;
@@ -137,7 +136,6 @@ static long hf_extract_texts(const char* json, long json_len, FILE* out) {
     return total;
 }
 
-// Download training data from HuggingFace using curl (paginated)
 static int data_auto_download(const char* out_path) {
     struct stat st;
     if (stat(out_path, &st) == 0 && st.st_size > DL_MIN_SIZE) {
@@ -177,7 +175,6 @@ static int data_auto_download(const char* out_path) {
             break;
         }
         
-        // Read JSON and extract
         struct stat jst;
         if (stat(tmp_json, &jst) != 0 || jst.st_size < 100) {
             printf("x"); fflush(stdout);
@@ -216,13 +213,14 @@ static int data_auto_download(const char* out_path) {
     return 0;
 }
 
-// Data — now works with encoded token IDs
+// ═══════════════════════════════════════════════════════════════════
+// Data loader
 // ═══════════════════════════════════════════════════════════════════
 
 typedef struct {
     unsigned char* raw;
     long           raw_size;
-    int*           ids;       // encoded token IDs
+    int*           ids;
     long           ids_len;
     long           pos;
 } DataLoader;
@@ -244,10 +242,8 @@ static int data_load(DataLoader* dl, const char* path) {
     return 0;
 }
 
-// Encode raw data through tokenizer
 static void data_encode(DataLoader* dl, EvolvingTokenizer* tok) {
     if (dl->ids) free(dl->ids);
-    // Upper bound: raw_size tokens (byte-level worst case)
     dl->ids = (int*)malloc(dl->raw_size * sizeof(int));
     if (!dl->ids) { fprintf(stderr, "ERROR: OOM encoding\n"); exit(1); }
     dl->ids_len = tok_encode_raw(tok, dl->raw, (int)dl->raw_size, dl->ids, (int)dl->raw_size);
@@ -273,18 +269,20 @@ static void data_free(DataLoader* dl) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Weight init
+// Weight init — FIXED: FFN uses proper hidden_dim expansion
 // ═══════════════════════════════════════════════════════════════════
 
 static long count_params(TrainConfig* cfg) {
-    return (long)cfg->vocab_size * cfg->n_embd +   // wte
-           (long)cfg->seq_len * cfg->n_embd +      // wpe
-           (long)cfg->n_layers * 7 * cfg->n_embd * cfg->n_embd + // attn+mlp
-           (long)cfg->vocab_size * cfg->n_embd;    // lm_head
+    return (long)cfg->vocab_size * cfg->n_embd +                          // wte
+           (long)cfg->seq_len * cfg->n_embd +                             // wpe
+           (long)cfg->n_layers * 4 * cfg->n_embd * cfg->n_embd +         // attn: wq,wk,wv,wo
+           (long)cfg->n_layers * 2 * cfg->hidden_dim * cfg->n_embd +     // w1,w3: [hidden,embd]
+           (long)cfg->n_layers * cfg->n_embd * cfg->hidden_dim +         // w2: [embd,hidden]
+           (long)cfg->vocab_size * cfg->n_embd;                           // lm_head
 }
 
 static void init_weights(TrainConfig* cfg) {
-    char script[16384];
+    char script[32768];
     int n = snprintf(script, sizeof(script),
         "wte = matrix(%d, %d, 0.02)\nwpe = matrix(%d, %d, 0.02)\n",
         cfg->vocab_size, cfg->n_embd, cfg->seq_len, cfg->n_embd);
@@ -296,8 +294,8 @@ static void init_weights(TrainConfig* cfg) {
             "w2_%d = matrix(%d, %d, 0.02)\n",
             l, cfg->n_embd, cfg->n_embd, l, cfg->n_embd, cfg->n_embd,
             l, cfg->n_embd, cfg->n_embd, l, cfg->n_embd, cfg->n_embd,
-            l, cfg->n_embd, cfg->n_embd, l, cfg->n_embd, cfg->n_embd,
-            l, cfg->n_embd, cfg->n_embd);
+            l, cfg->hidden_dim, cfg->n_embd, l, cfg->hidden_dim, cfg->n_embd,
+            l, cfg->n_embd, cfg->hidden_dim);
     }
     n += snprintf(script + n, sizeof(script) - n,
         "lm_head = matrix(%d, %d, 0.02)\n", cfg->vocab_size, cfg->n_embd);
@@ -354,7 +352,7 @@ static char* generate_model_script(TrainConfig* cfg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Checkpoint save/load (compatible with v1 format + tokenizer)
+// Checkpoint save/load — v2 format with hidden_dim in header[7]
 // ═══════════════════════════════════════════════════════════════════
 
 static void save_checkpoint(TrainConfig* cfg, int step, EvolvingTokenizer* tok) {
@@ -364,7 +362,7 @@ static void save_checkpoint(TrainConfig* cfg, int step, EvolvingTokenizer* tok) 
     if (!f) return;
 
     int header[8] = {0x4A414E55, cfg->vocab_size, cfg->n_embd, cfg->n_heads,
-                     cfg->n_layers, cfg->seq_len, step, 0};
+                     cfg->n_layers, cfg->seq_len, step, cfg->hidden_dim};
     fwrite(header, sizeof(int), 8, f);
 
     const char* gnames[] = {"wte", "wpe", "lm_head", NULL};
@@ -387,7 +385,6 @@ static void save_checkpoint(TrainConfig* cfg, int step, EvolvingTokenizer* tok) 
     fclose(f);
     trainlog("  Checkpoint: %s (%.2f MB)\n", path, (double)fsize / (1024*1024));
 
-    // Save tokenizer alongside
     if (tok && tok->n_merges > 0) {
         char tpath[256];
         snprintf(tpath, sizeof(tpath), "janus_tok_step%d.bin", step);
@@ -405,9 +402,11 @@ static int load_checkpoint(TrainConfig* cfg, const char* path) {
     }
     int ckpt_step = header[6];
     cfg->vocab_size = header[1];
-    // n_embd, n_heads, n_layers, seq_len should already match
-    printf("Loading checkpoint: step %d (V=%d D=%d H=%d L=%d)\n",
-           ckpt_step, header[1], header[2], header[3], header[4]);
+    int ckpt_hidden = header[7];  // 0 for old checkpoints (square FFN)
+    
+    printf("Loading checkpoint: step %d (V=%d D=%d H=%d L=%d hidden=%d)\n",
+           ckpt_step, header[1], header[2], header[3], header[4],
+           ckpt_hidden > 0 ? ckpt_hidden : header[2]);
 
     struct { const char* name; int rows; int cols; } globals[] = {
         {"wte",     cfg->vocab_size, cfg->n_embd},
@@ -421,15 +420,47 @@ static int load_checkpoint(TrainConfig* cfg, const char* path) {
         am_set_var_matrix(globals[i].name, buf, globals[i].rows, globals[i].cols);
         free(buf);
     }
+    
+    // Per-layer weights: attention are always [n_embd, n_embd]
+    // FFN depends on checkpoint format (old=square, new=proper hidden_dim)
+    int ffn_hidden = ckpt_hidden > 0 ? ckpt_hidden : cfg->n_embd;
+    
     for (int l = 0; l < cfg->n_layers; l++) {
-        const char* sfx[] = {"wq", "wk", "wv", "wo", "w1_", "w3_", "w2_", NULL};
-        for (int s = 0; sfx[s]; s++) {
+        // Attention weights: wq, wk, wv, wo — always [n_embd, n_embd]
+        const char* attn_sfx[] = {"wq", "wk", "wv", "wo", NULL};
+        for (int s = 0; attn_sfx[s]; s++) {
             char name[32];
-            snprintf(name, sizeof(name), "%s%d", sfx[s], l);
+            snprintf(name, sizeof(name), "%s%d", attn_sfx[s], l);
             int len; fread(&len, sizeof(int), 1, f);
             float* buf = (float*)malloc(len * sizeof(float));
             fread(buf, sizeof(float), len, f);
             am_set_var_matrix(name, buf, cfg->n_embd, cfg->n_embd);
+            free(buf);
+        }
+        // FFN weights: w1_[hidden,embd], w3_[hidden,embd], w2_[embd,hidden]
+        {
+            char name[32];
+            int len; float* buf;
+            
+            snprintf(name, 32, "w1_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, ffn_hidden, cfg->n_embd);
+            free(buf);
+            
+            snprintf(name, 32, "w3_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, ffn_hidden, cfg->n_embd);
+            free(buf);
+            
+            snprintf(name, 32, "w2_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->n_embd, ffn_hidden);
             free(buf);
         }
     }
@@ -443,12 +474,13 @@ static int load_checkpoint(TrainConfig* cfg, const char* path) {
 // ═══════════════════════════════════════════════════════════════════
 
 static void parse_args(int argc, char** argv, TrainConfig* cfg) {
-    cfg->vocab_size = TOK_BASE;  // starts at 259, grows with BPE
+    cfg->vocab_size = TOK_BASE;
     cfg->n_embd = 128; cfg->n_heads = 4; cfg->n_layers = 4;
     cfg->seq_len = 128; cfg->lr = 0.001f;
     cfg->total_steps = 1000; cfg->log_every = 10; cfg->save_every = 100;
     cfg->evolve_every = 500;
     cfg->bpe_after = 20000; cfg->bpe_merges = 384; cfg->bpe_retrain = 4000;
+    cfg->hidden_dim = 0;  // computed after n_embd is set
     memset(cfg->data_path, 0, 512); memset(cfg->model_path, 0, 512);
     memset(cfg->resume_path, 0, 512); memset(cfg->log_path, 0, 512);
 
@@ -461,6 +493,7 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
         else if (!strcmp(argv[i], "--n-embd") && i+1 < argc)        cfg->n_embd = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--n-heads") && i+1 < argc)       cfg->n_heads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--n-layers") && i+1 < argc)      cfg->n_layers = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hidden-dim") && i+1 < argc)    cfg->hidden_dim = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--log-every") && i+1 < argc)     cfg->log_every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--save-every") && i+1 < argc)    cfg->save_every = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--evolve-every") && i+1 < argc)  cfg->evolve_every = atoi(argv[++i]);
@@ -478,6 +511,7 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
                    "  --n-embd N        embedding dim\n"
                    "  --n-heads N       attention heads\n"
                    "  --n-layers N      transformer layers\n"
+                   "  --hidden-dim N    FFN hidden dim (default: 2.67x n_embd)\n"
                    "  --log-every N     log interval\n"
                    "  --save-every N    checkpoint interval\n"
                    "  --evolve-every N  tokenizer evolution check interval\n"
@@ -495,6 +529,10 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
     if (cfg->n_embd % cfg->n_heads != 0) {
         fprintf(stderr, "ERROR: n_embd %d not divisible by n_heads %d\n",
                 cfg->n_embd, cfg->n_heads); exit(1);
+    }
+    // Compute hidden_dim if not explicitly set
+    if (cfg->hidden_dim <= 0) {
+        cfg->hidden_dim = compute_hidden_dim(cfg->n_embd);
     }
 }
 
@@ -518,11 +556,12 @@ int main(int argc, char** argv) {
     }
 
     printf("═══════════════════════════════════════════════════\n");
-    printf("  JANUS v2 — EvolvingTokenizer + AML Transformer\n");
+    printf("  JANUS v3 — SwiGLU FFN + EvolvingTokenizer\n");
     printf("  No Python. No PyTorch. BPE grows during training.\n");
     printf("═══════════════════════════════════════════════════\n");
     printf("Data:       %s\n", cfg.data_path);
     printf("Embedding:  %d\n", cfg.n_embd);
+    printf("Hidden:     %d (%.1fx expansion)\n", cfg.hidden_dim, (float)cfg.hidden_dim / cfg.n_embd);
     printf("Heads:      %d (head_dim=%d)\n", cfg.n_heads, cfg.n_embd / cfg.n_heads);
     printf("Layers:     %d\n", cfg.n_layers);
     printf("Seq len:    %d\n", cfg.seq_len);
@@ -534,10 +573,8 @@ int main(int argc, char** argv) {
     printf("─────────────────────────────────────────────────\n");
     fflush(stdout);
 
-    // Load data
     DataLoader dl;
 
-    // Auto-download from HuggingFace if no data file
     {
         struct stat _st;
         if (stat(cfg.data_path, &_st) != 0 || _st.st_size < DL_MIN_SIZE) {
@@ -551,15 +588,11 @@ int main(int argc, char** argv) {
     if (data_load(&dl, cfg.data_path) != 0) return 1;
     printf("Data:       %ld bytes (%.2f MB)\n", dl.raw_size, (double)dl.raw_size / (1024*1024));
 
-    // Init tokenizer
     EvolvingTokenizer tok;
     tok_init(&tok, cfg.bpe_after, cfg.bpe_merges, cfg.bpe_retrain);
 
-    // Try loading tokenizer from checkpoint
     if (cfg.resume_path[0]) {
-        // Derive tokenizer path from checkpoint path
         char tpath[512];
-        // Replace "ckpt" with "tok" in filename
         snprintf(tpath, sizeof(tpath), "%s", cfg.resume_path);
         char* p = strstr(tpath, "ckpt");
         if (p) { memcpy(p, "tok_", 4); }
@@ -572,13 +605,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Try to enable BPE immediately if data is large enough
     if (!tok.bpe_enabled) {
         int changed = tok_maybe_evolve(&tok, dl.raw, dl.raw_size);
         if (changed) cfg.vocab_size = tok.vocab_size;
     }
 
-    // Encode data through tokenizer
     data_encode(&dl, &tok);
 
     if (dl.ids_len < cfg.seq_len + 1) {
@@ -586,18 +617,15 @@ int main(int argc, char** argv) {
                 dl.ids_len, cfg.seq_len); return 1;
     }
 
-    // Build model script
     char* model_script = generate_model_script(&cfg);
     if (!model_script) { fprintf(stderr, "ERROR: OOM\n"); return 1; }
 
-    // Init AML
     am_init();
     am_persistent_mode(1);
 #ifdef USE_CUDA
     if (gpu_init() != 0) fprintf(stderr, "GPU init failed\n");
 #endif
 
-    // Set hyperparams
     {
         char hyper[256];
         snprintf(hyper, sizeof(hyper),
@@ -606,7 +634,6 @@ int main(int argc, char** argv) {
         am_exec(hyper);
     }
 
-    // Init or load weights
     int start_step = 0;
     if (cfg.resume_path[0]) {
         start_step = load_checkpoint(&cfg, cfg.resume_path);
@@ -622,11 +649,9 @@ int main(int argc, char** argv) {
     printf("─────────────────────────────────────────────────\n");
     fflush(stdout);
 
-    // Batch buffers
     float* tokens = (float*)malloc(cfg.seq_len * sizeof(float));
     float* targets = (float*)malloc(cfg.seq_len * sizeof(float));
 
-    // Training loop
     float loss_sum = 0;
     int loss_count = 0;
     struct timespec t_start, t_end;
@@ -659,19 +684,15 @@ int main(int argc, char** argv) {
             loss_count = 0;
         }
 
-        // Tokenizer evolution check
         if (cfg.evolve_every > 0 && step % cfg.evolve_every == 0) {
             int old_v = tok.vocab_size;
             int changed = tok_maybe_evolve(&tok, dl.raw, dl.raw_size);
             if (changed) {
-                // Expand embeddings
                 tok_expand_embeddings(old_v, tok.vocab_size, cfg.n_embd);
                 cfg.vocab_size = tok.vocab_size;
-                // Update AML vocab_size
                 char cmd[64];
                 snprintf(cmd, sizeof(cmd), "vocab_size = %d", cfg.vocab_size);
                 am_exec(cmd);
-                // Re-encode data
                 data_encode(&dl, &tok);
                 trainlog("[tok] vocab evolved to %d, data re-encoded to %ld tokens\n",
                          cfg.vocab_size, dl.ids_len);

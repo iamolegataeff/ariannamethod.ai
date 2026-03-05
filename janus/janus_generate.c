@@ -1,4 +1,4 @@
-// janus_generate.c — Interactive chat with Janus (v2: EvolvingTokenizer)
+// janus_generate.c — Interactive chat with Janus (v3: proper SwiGLU FFN)
 // Loads checkpoint + tokenizer, runs forward-only AML, samples text.
 //
 // Usage: ./janus_generate <checkpoint> [--temp F] [--max-tokens N] [--top-k N]
@@ -15,13 +15,11 @@
 #include "janus/janus_tokenizer.h"
 
 typedef struct {
-    int   vocab_size, n_embd, n_heads, n_layers, seq_len;
+    int   vocab_size, n_embd, hidden_dim, n_heads, n_layers, seq_len;
     float temperature;
     int   max_tokens, top_k;
     char  ckpt_path[512];
 } GenConfig;
-
-// ── Checkpoint loading ───────────────────────────────────────────
 
 static int load_checkpoint(GenConfig* cfg, const char* path) {
     FILE* f = fopen(path, "rb");
@@ -33,8 +31,13 @@ static int load_checkpoint(GenConfig* cfg, const char* path) {
     cfg->vocab_size = hdr[1]; cfg->n_embd = hdr[2]; cfg->n_heads = hdr[3];
     cfg->n_layers = hdr[4]; cfg->seq_len = hdr[5];
     int step = hdr[6];
-    printf("Checkpoint: step %d, V=%d D=%d H=%d L=%d seq=%d\n",
-           step, cfg->vocab_size, cfg->n_embd, cfg->n_heads, cfg->n_layers, cfg->seq_len);
+    cfg->hidden_dim = hdr[7];
+    // Old checkpoints have hidden_dim=0 (square FFN)
+    if (cfg->hidden_dim <= 0) cfg->hidden_dim = cfg->n_embd;
+    
+    printf("Checkpoint: step %d, V=%d D=%d hidden=%d H=%d L=%d seq=%d\n",
+           step, cfg->vocab_size, cfg->n_embd, cfg->hidden_dim,
+           cfg->n_heads, cfg->n_layers, cfg->seq_len);
 
     struct { const char* name; int rows; int cols; } g[] = {
         {"wte", cfg->vocab_size, cfg->n_embd},
@@ -49,21 +52,45 @@ static int load_checkpoint(GenConfig* cfg, const char* path) {
         free(buf);
     }
     for (int l = 0; l < cfg->n_layers; l++) {
-        const char* sfx[] = {"wq","wk","wv","wo","w1_","w3_","w2_",NULL};
-        for (int s = 0; sfx[s]; s++) {
-            char name[32]; snprintf(name, 32, "%s%d", sfx[s], l);
+        // Attention: wq, wk, wv, wo — [n_embd, n_embd]
+        const char* attn_sfx[] = {"wq", "wk", "wv", "wo", NULL};
+        for (int s = 0; attn_sfx[s]; s++) {
+            char name[32]; snprintf(name, 32, "%s%d", attn_sfx[s], l);
             int len; fread(&len, sizeof(int), 1, f);
             float* buf = (float*)malloc(len * sizeof(float));
             fread(buf, sizeof(float), len, f);
             am_set_var_matrix(name, buf, cfg->n_embd, cfg->n_embd);
             free(buf);
         }
+        // FFN: w1_[hidden,embd], w3_[hidden,embd], w2_[embd,hidden]
+        {
+            char name[32]; int len; float* buf;
+            
+            snprintf(name, 32, "w1_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd);
+            free(buf);
+            
+            snprintf(name, 32, "w3_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd);
+            free(buf);
+            
+            snprintf(name, 32, "w2_%d", l);
+            fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float));
+            fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->n_embd, cfg->hidden_dim);
+            free(buf);
+        }
     }
     fclose(f);
     return step;
 }
-
-// ── Forward-only AML script ──────────────────────────────────────
 
 static char* gen_forward(GenConfig* cfg) {
     int bs = cfg->n_layers * 512 + 512;
@@ -93,8 +120,6 @@ static char* gen_forward(GenConfig* cfg) {
     return s;
 }
 
-// ── Sampling ─────────────────────────────────────────────────────
-
 static int sample_topk(const float* logits, int V, float temp, int K) {
     typedef struct { float v; int i; } P;
     P* p = (P*)malloc(V * sizeof(P));
@@ -114,26 +139,21 @@ static int sample_topk(const float* logits, int V, float temp, int K) {
     return tok;
 }
 
-// ── Generation ───────────────────────────────────────────────────
-
 static void generate(GenConfig* cfg, EvolvingTokenizer* tok, const char* fwd,
                      const char* prompt_text, float temp, int max_tok, int topk) {
     int V = cfg->vocab_size;
     int S = cfg->seq_len;
     float* tokens = (float*)calloc(S, sizeof(float));
 
-    // Encode prompt through tokenizer
     int prompt_ids[8192];
     int prompt_len = tok_encode_raw(tok, (const unsigned char*)prompt_text,
                                      strlen(prompt_text), prompt_ids, 8192);
 
-    // Fill context (right-aligned)
     int ctx = prompt_len < S ? prompt_len : S;
     int start = S - ctx;
     for (int i = 0; i < ctx; i++)
         tokens[start + i] = (float)prompt_ids[prompt_len - ctx + i];
 
-    // Stop detection: look for <|user|> in decoded output
     char decoded_buf[1024] = {0};
     int decoded_pos = 0;
 
@@ -147,31 +167,25 @@ static void generate(GenConfig* cfg, EvolvingTokenizer* tok, const char* fwd,
 
         int next = sample_topk(all + (S-1)*V, V, temp, topk);
 
-        // Decode this token to bytes and output
         unsigned char out[64];
         int out_len = tok_decode_token(tok, next, out, 64);
         for (int i = 0; i < out_len; i++) {
             putchar(out[i]);
-            // Track for stop detection
             if (decoded_pos < 1023)
                 decoded_buf[decoded_pos++] = out[i];
         }
         fflush(stdout);
 
-        // Check stop: <|user|>
         if (decoded_pos >= 8 && strstr(decoded_buf + (decoded_pos > 64 ? decoded_pos - 64 : 0), "<|user|>")) {
             printf("\n");
             break;
         }
 
-        // Shift context, append
         for (int i = 0; i < S-1; i++) tokens[i] = tokens[i+1];
         tokens[S-1] = (float)next;
     }
     free(tokens);
 }
-
-// ── Main ─────────────────────────────────────────────────────────
 
 int main(int argc, char** argv) {
     GenConfig cfg = {0};
@@ -192,18 +206,17 @@ int main(int argc, char** argv) {
     int step = load_checkpoint(&cfg, cfg.ckpt_path);
     if (step < 0) return 1;
 
-    // Set hypers
     { char h[256]; snprintf(h, 256, "n_embd=%d\nn_heads=%d\nseq_len=%d\nvocab_size=%d\n",
           cfg.n_embd, cfg.n_heads, cfg.seq_len, cfg.vocab_size); am_exec(h); }
 
-    // Load tokenizer if available
     EvolvingTokenizer tok;
     tok_init(&tok, 0, 0, 0);
     {
         char tpath[512];
         snprintf(tpath, 512, "%s", cfg.ckpt_path);
-        char* p = strstr(tpath, "ckpt");
-        if (p) memcpy(p, "tok_", 4);
+        // Fix tokenizer path: replace "ckpt_step" with "tok_step"
+        char* p = strstr(tpath, "ckpt_step");
+        if (p) { memmove(p + 3, p + 4, strlen(p + 4) + 1); memcpy(p, "tok", 3); }
         if (tok_load(&tok, tpath) == 0) {
             printf("Tokenizer: vocab=%d, merges=%d, bpe=%s\n",
                    tok.vocab_size, tok.n_merges, tok.bpe_enabled ? "ON" : "OFF");
@@ -214,11 +227,16 @@ int main(int argc, char** argv) {
 
     char* fwd = gen_forward(&cfg);
 
+    long total = (long)cfg.vocab_size*cfg.n_embd*2 + (long)cfg.seq_len*cfg.n_embd +
+                 (long)cfg.n_layers*4*cfg.n_embd*cfg.n_embd +
+                 (long)cfg.n_layers*(2*cfg.hidden_dim*cfg.n_embd + cfg.n_embd*cfg.hidden_dim);
     printf("═══════════════════════════════════════════════════\n");
     printf("  JANUS CHAT — %.2fM params, vocab=%d (%s)\n",
-           (double)((long)cfg.vocab_size*cfg.n_embd*2 + (long)cfg.seq_len*cfg.n_embd +
-                    (long)cfg.n_layers*7*cfg.n_embd*cfg.n_embd) / 1e6,
+           (double)total / 1e6,
            cfg.vocab_size, tok.bpe_enabled ? "BPE" : "byte-level");
+    printf("  D=%d hidden=%d (%.1fx) heads=%d layers=%d\n",
+           cfg.n_embd, cfg.hidden_dim, (float)cfg.hidden_dim/cfg.n_embd,
+           cfg.n_heads, cfg.n_layers);
     printf("  temp=%.2f, top_k=%d, max_tokens=%d\n", cfg.temperature, cfg.top_k, cfg.max_tokens);
     printf("  Empty line = quit.\n");
     printf("═══════════════════════════════════════════════════\n\n");
