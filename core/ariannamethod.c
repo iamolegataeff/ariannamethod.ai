@@ -2489,6 +2489,9 @@ static float expr_primary(AML_Expr* e) {
             if (e->ctx) {
                 AML_Var* var = resolve_var_full(e->ctx, name);
                 if (var && var->type == AML_TYPE_ARRAY && var->array) {
+#ifdef USE_CUDA
+                    if (var->array->gpu_valid && var->array->d_data) ensure_cpu(var->array);
+#endif
                     if (idx >= 0 && idx < var->array->len)
                         return var->array->data[idx];
                 }
