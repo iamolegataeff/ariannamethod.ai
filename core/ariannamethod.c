@@ -979,6 +979,10 @@ AM_Array* am_array_new(int len) {
     arr->refcount = 1;
     arr->rows = 0;
     arr->cols = 0;
+#ifdef USE_CUDA
+    arr->d_data = NULL;
+    arr->gpu_valid = 0;
+#endif
     return arr;
 }
 
@@ -999,6 +1003,9 @@ void am_array_free(AM_Array* arr) {
     arr->refcount--;
     if (arr->refcount <= 0) {
         free(arr->data);
+#ifdef USE_CUDA
+        if (arr->d_data) gpu_free(arr->d_data);
+#endif
         free(arr);
     }
 }
@@ -1020,6 +1027,27 @@ static AM_Array* am_array_clone(const AM_Array* src) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+#ifdef USE_CUDA
+static void ensure_gpu(AM_Array* arr) {
+    if (!arr || !arr->data) return;
+    if (!arr->d_data) {
+        arr->d_data = gpu_alloc(arr->len);
+        if (!arr->d_data) return;
+    }
+    if (!arr->gpu_valid) {
+        gpu_upload(arr->d_data, arr->data, arr->len);
+        arr->gpu_valid = 1;
+    }
+}
+static void ensure_cpu(AM_Array* arr) {
+    if (!arr || !arr->d_data || !arr->gpu_valid || !arr->data) return;
+    gpu_download(arr->data, arr->d_data, arr->len);
+}
+static void invalidate_gpu(AM_Array* arr) {
+    if (arr) arr->gpu_valid = 0;
+}
+#endif
+
 // AUTOGRAD TAPE (v4.0 Phase 3) — reverse-mode automatic differentiation
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1066,6 +1094,7 @@ static void am_tape_destroy(void) {
     for (int i = 0; i < g_tape.n_params; i++) {
         if (g_tape.adam[i].m) { am_array_free(g_tape.adam[i].m); g_tape.adam[i].m = NULL; }
         if (g_tape.adam[i].v) { am_array_free(g_tape.adam[i].v); g_tape.adam[i].v = NULL; }
+        if (g_tape.adam[i].acc_grad) { am_array_free(g_tape.adam[i].acc_grad); g_tape.adam[i].acc_grad = NULL; }
         g_tape.adam[i].t = 0;
     }
     // memset zeros everything including chuck state
@@ -1129,25 +1158,28 @@ int am_tape_record_param(AM_Array* param) {
     e->aux = 0;
     e->aux2 = 0;
     e->is_param = 1;
+    e->no_decay = 0;
 
-    // Register for Adam if not already registered
-    // Use pointer comparison to find existing registration
-    int found = -1;
-    for (int i = 0; i < g_tape.n_params; i++) {
-        // adam[i] corresponds to the i-th unique param
-        // We need a way to match — use the data pointer
-        // (params share the same data pointer across tape recordings)
-        if (g_tape.adam[i].m && g_tape.adam[i].m->len == param->len) {
-            // Already has an adam state of the right size — reuse index
-            // NOTE: this is a simplification. In practice we'd track by pointer.
-        }
-    }
-    if (found < 0 && g_tape.n_params < AM_TAPE_MAX_PARAMS) {
+    // Register for Adam — positional: param N always gets adam slot N
+    if (g_tape.n_params < AM_TAPE_MAX_PARAMS) {
         int pi = g_tape.n_params;
         if (!g_tape.adam[pi].m) {
+            // First time: allocate
             g_tape.adam[pi].m = am_array_new(param->len);
             g_tape.adam[pi].v = am_array_new(param->len);
             g_tape.adam[pi].t = 0;
+        } else if (g_tape.adam[pi].m->len != param->len) {
+            // Size changed (vocab evolution): resize, zero-init new elements
+            int old_len = g_tape.adam[pi].m->len;
+            AM_Array* new_m = am_array_new(param->len);
+            AM_Array* new_v = am_array_new(param->len);
+            int copy_len = old_len < param->len ? old_len : param->len;
+            memcpy(new_m->data, g_tape.adam[pi].m->data, copy_len * sizeof(float));
+            memcpy(new_v->data, g_tape.adam[pi].v->data, copy_len * sizeof(float));
+            am_array_free(g_tape.adam[pi].m);
+            am_array_free(g_tape.adam[pi].v);
+            g_tape.adam[pi].m = new_m;
+            g_tape.adam[pi].v = new_v;
         }
         g_tape.n_params++;
     }
@@ -1190,6 +1222,23 @@ void am_tape_backward(int loss_idx) {
         case AM_OP_ADD: {
             // y = a + b → da += dout, db += dout
             if (e->parent1 >= 0) tape_acc_grad(e->parent1, dout, out_len);
+#ifdef USE_CUDA
+                if (e->output->d_data && e->output->gpu_valid) {
+                    float* d_ga = gpu_scratch(3, out_len);
+                    float* d_gb = gpu_scratch(4, out_len);
+                    float* d_dout_buf = gpu_scratch(0, out_len);
+                    gpu_upload(d_dout_buf, dout, out_len);
+                    gpu_add_backward(d_ga, d_gb, d_dout_buf, out_len);
+                    float* ga = (float*)malloc(out_len * sizeof(float));
+                    float* gb = (float*)malloc(out_len * sizeof(float));
+                    gpu_download(ga, d_ga, out_len);
+                    gpu_download(gb, d_gb, out_len);
+                    tape_acc_grad(e->parent1, ga, out_len);
+                    tape_acc_grad(e->parent2, gb, out_len);
+                    free(ga); free(gb);
+                    break;
+                }
+#endif
             if (e->parent2 >= 0) tape_acc_grad(e->parent2, dout, out_len);
             break;
         }
@@ -1198,6 +1247,25 @@ void am_tape_backward(int loss_idx) {
             if (e->parent1 >= 0 && e->parent2 >= 0) {
                 AM_TapeEntry* pa = &g_tape.entries[e->parent1];
                 AM_TapeEntry* pb = &g_tape.entries[e->parent2];
+#ifdef USE_CUDA
+                if (pa->output->d_data && pa->output->gpu_valid &&
+                    pb->output->d_data && pb->output->gpu_valid) {
+                    float* d_ga = gpu_scratch(3, out_len);
+                    float* d_gb = gpu_scratch(4, out_len);
+                    float* d_dout_buf = gpu_scratch(0, out_len);
+                    gpu_upload(d_dout_buf, dout, out_len);
+                    gpu_mul_backward(d_ga, d_gb, d_dout_buf,
+                                     pa->output->d_data, pb->output->d_data, out_len);
+                    float* ga = (float*)malloc(out_len * sizeof(float));
+                    float* gb = (float*)malloc(out_len * sizeof(float));
+                    gpu_download(ga, d_ga, out_len);
+                    gpu_download(gb, d_gb, out_len);
+                    tape_acc_grad(e->parent1, ga, out_len);
+                    tape_acc_grad(e->parent2, gb, out_len);
+                    free(ga); free(gb);
+                    break;
+                }
+#endif
                 float* ga = (float*)calloc(out_len, sizeof(float));
                 float* gb = (float*)calloc(out_len, sizeof(float));
                 if (ga && gb) {
@@ -1258,6 +1326,19 @@ void am_tape_backward(int loss_idx) {
             // y = x * sigmoid(x) → dy/dx = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
             if (e->parent1 >= 0) {
                 AM_TapeEntry* px = &g_tape.entries[e->parent1];
+#ifdef USE_CUDA
+                if (px->output->d_data && px->output->gpu_valid) {
+                    float* d_gx = gpu_scratch(3, out_len);
+                    float* d_dout_buf = gpu_scratch(0, out_len);
+                    gpu_upload(d_dout_buf, dout, out_len);
+                    gpu_silu_backward(d_gx, d_dout_buf, px->output->d_data, out_len);
+                    float* gx = (float*)malloc(out_len * sizeof(float));
+                    gpu_download(gx, d_gx, out_len);
+                    tape_acc_grad(e->parent1, gx, out_len);
+                    free(gx);
+                    break;
+                }
+#endif
                 float* gx = (float*)calloc(out_len, sizeof(float));
                 if (gx) {
                     for (int i = 0; i < out_len; i++) {
@@ -1407,28 +1488,49 @@ void am_tape_backward(int loss_idx) {
                     float* Wd = pw->output->data;
                     float* Xd = px->output->data;
 #ifdef USE_CUDA
-                    // GPU backward: dX(T,in) = dout(T,out) × W(out,in)
-                    //               dW(out,in) = dout^T(out,T) × X(T,in)
+                    // GPU tensor backward
                     {
-                        float* d_W = gpu_alloc(out_d * in_d);
-                        float* d_dout = gpu_alloc(T * out_d);
-                        float* d_X = gpu_alloc(T * in_d);
-                        float* d_dW = gpu_alloc(out_d * in_d);
-                        float* d_dX = gpu_alloc(T * in_d);
-                        if (d_W && d_dout && d_X && d_dW && d_dX) {
-                            gpu_upload(d_W, Wd, out_d * in_d);
-                            gpu_upload(d_dout, dout, T * out_d);
-                            gpu_upload(d_X, Xd, T * in_d);
-                            // dX = dout × W
-                            gpu_sgemm_nn(T, in_d, out_d, d_dout, d_W, d_dX);
+                        ensure_gpu(pw->output);
+                        ensure_gpu(px->output);
+                        float* d_dout_buf = gpu_scratch(0, T * out_d);
+                        if (d_dout_buf && pw->output->d_data && px->output->d_data) {
+                            gpu_upload(d_dout_buf, dout, T * out_d);
+                            float* d_dX = gpu_scratch(1, T * in_d);
+                            gpu_sgemm_nn(T, in_d, out_d, d_dout_buf, pw->output->d_data, d_dX);
                             gpu_download(dx, d_dX, T * in_d);
-                            // dW = dout^T × X
-                            gpu_sgemm_tn(out_d, in_d, T, d_dout, d_X, d_dW);
+                            float* d_dW = gpu_scratch(2, out_d * in_d);
+                            gpu_sgemm_tn(out_d, in_d, T, d_dout_buf, px->output->d_data, d_dW);
                             gpu_download(dw, d_dW, out_d * in_d);
+                        } else {
+                            ensure_cpu(pw->output); ensure_cpu(px->output);
+                            float* Wd2 = pw->output->data;
+                            float* Xd2 = px->output->data;
+                            for (int t = 0; t < T; t++) {
+                                float* dout_t = dout + t * out_d;
+                                for (int j = 0; j < in_d; j++)
+                                    for (int i = 0; i < out_d; i++)
+                                        dx[t * in_d + j] += Wd2[i * in_d + j] * dout_t[i];
+                            }
+                            for (int t = 0; t < T; t++) {
+                                float* dout_t = dout + t * out_d;
+                                float* x_t = Xd2 + t * in_d;
+                                for (int i = 0; i < out_d; i++)
+                                    for (int j = 0; j < in_d; j++)
+                                        dw[i * in_d + j] += dout_t[i] * x_t[j];
+                            }
                         }
-                        gpu_free(d_W); gpu_free(d_dout); gpu_free(d_X);
-                        gpu_free(d_dW); gpu_free(d_dX);
                     }
+#elif defined(USE_BLAS)
+                    // BLAS backward: dX(T,in) = dout(T,out) x W(out,in)
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                                T, in_d, out_d,
+                                1.0f, dout, out_d, Wd, in_d,
+                                0.0f, dx, in_d);
+                    // dW(out,in) = dout^T(out,T) x X(T,in)
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                out_d, in_d, T,
+                                1.0f, dout, out_d, Xd, in_d,
+                                0.0f, dw, in_d);
 #else
                     // dX: each position t independent → parallelize over t
                     #ifdef _OPENMP
@@ -1462,6 +1564,21 @@ void am_tape_backward(int loss_idx) {
             // For each position t: y_t = x_t / rms_t where rms_t = sqrt(mean(x_t^2) + eps)
             if (e->parent1 >= 0) {
                 AM_TapeEntry* px = &g_tape.entries[e->parent1];
+#ifdef USE_CUDA
+                if (px->output->d_data && px->output->gpu_valid) {
+                    int Tr = (int)e->aux;
+                    int Dr = (int)e->aux2;
+                    float* d_gx = gpu_scratch(3, Tr * Dr);
+                    float* d_dout_buf = gpu_scratch(0, Tr * Dr);
+                    gpu_upload(d_dout_buf, dout, Tr * Dr);
+                    gpu_rmsnorm_backward(d_gx, d_dout_buf, px->output->d_data, Tr, Dr);
+                    float* gx = (float*)malloc(Tr * Dr * sizeof(float));
+                    gpu_download(gx, d_gx, Tr * Dr);
+                    tape_acc_grad(e->parent1, gx, Tr * Dr);
+                    free(gx);
+                    break;
+                }
+#endif
                 int T = (int)e->aux;
                 int D = (int)e->aux2;
                 float* gx = (float*)calloc(T * D, sizeof(float));
@@ -1690,6 +1807,125 @@ void am_tape_adam_step(float lr) {
             float m_hat = as->m->data[j] / (1.0f - powf(beta1, (float)as->t));
             float v_hat = as->v->data[j] / (1.0f - powf(beta2, (float)as->t));
             e->output->data[j] -= lr * m_hat / (sqrtf(v_hat) + eps);
+        }
+        param_idx++;
+    }
+}
+
+// AdamW optimizer step: Adam with decoupled weight decay
+// Matches PyTorch AdamW: weight decay applied directly to params, not through gradient
+void am_tape_adamw_step(float lr, float weight_decay, float beta1, float beta2) {
+    float eps = 1e-8f;
+    int param_idx = 0;
+
+    for (int i = 0; i < g_tape.count && param_idx < g_tape.n_params; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->grad) continue;
+
+        AM_AdamState* as = &g_tape.adam[param_idx];
+        if (!as->m || !as->v) { param_idx++; continue; }
+
+        as->t++;
+        int n = e->output->len;
+        if (as->m->len < n) n = as->m->len;
+
+        float bc1 = 1.0f - powf(beta1, (float)as->t);
+        float bc2 = 1.0f - powf(beta2, (float)as->t);
+
+        float wd = (e->no_decay) ? 0.0f : weight_decay;
+        for (int j = 0; j < n; j++) {
+            // Decoupled weight decay (AdamW): applied to param, not gradient
+            // Skipped for embeddings (no_decay=1)
+            if (wd > 0.0f)
+                e->output->data[j] -= lr * wd * e->output->data[j];
+
+            float g = e->grad->data[j];
+            as->m->data[j] = beta1 * as->m->data[j] + (1.0f - beta1) * g;
+            as->v->data[j] = beta2 * as->v->data[j] + (1.0f - beta2) * g * g;
+            float m_hat = as->m->data[j] / bc1;
+            float v_hat = as->v->data[j] / bc2;
+            e->output->data[j] -= lr * m_hat / (sqrtf(v_hat) + eps);
+        }
+        param_idx++;
+    }
+}
+
+// Gradient clipping by global norm (like torch.nn.utils.clip_grad_norm_)
+// Returns the total gradient norm before clipping
+float am_tape_clip_grads(float max_norm) {
+    // First pass: compute global gradient norm
+    float total_norm_sq = 0.0f;
+    for (int i = 0; i < g_tape.count; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->grad) continue;
+        int n = e->output->len;
+        if (e->grad->len < n) n = e->grad->len;
+        for (int j = 0; j < n; j++) {
+            float g = e->grad->data[j];
+            total_norm_sq += g * g;
+        }
+    }
+    float total_norm = sqrtf(total_norm_sq);
+
+    // Second pass: scale gradients if norm exceeds max_norm
+    if (total_norm > max_norm) {
+        float scale = max_norm / (total_norm + 1e-6f);
+        for (int i = 0; i < g_tape.count; i++) {
+            AM_TapeEntry* e = &g_tape.entries[i];
+            if (!e->is_param || !e->grad) continue;
+            int n = e->output->len;
+            if (e->grad->len < n) n = e->grad->len;
+            for (int j = 0; j < n; j++) {
+                e->grad->data[j] *= scale;
+            }
+        }
+    }
+    return total_norm;
+}
+
+// ── Gradient accumulation ─────────────────────────────────────────────────────
+// TAPE ACCUM_GRADS: after BACKWARD, save param grads into acc_grad buffer (additive)
+// TAPE APPLY_ACCUM N: divide acc_grad by N, copy into tape entry grads, zero acc_grad
+
+void am_tape_accum_grads(void) {
+    int param_idx = 0;
+    for (int i = 0; i < g_tape.count && param_idx < g_tape.n_params; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->grad) continue;
+        AM_AdamState* as = &g_tape.adam[param_idx];
+        int n = e->output->len;
+        // Allocate acc_grad on first use
+        if (!as->acc_grad) {
+            as->acc_grad = am_array_new(n);
+        } else if (as->acc_grad->len < n) {
+            am_array_free(as->acc_grad);
+            as->acc_grad = am_array_new(n);
+        }
+        // Accumulate: acc_grad += grad
+        for (int j = 0; j < n && j < as->acc_grad->len; j++) {
+            as->acc_grad->data[j] += e->grad->data[j];
+        }
+        param_idx++;
+    }
+}
+
+void am_tape_apply_accum(int n_accum) {
+    float scale = (n_accum > 1) ? 1.0f / (float)n_accum : 1.0f;
+    int param_idx = 0;
+    for (int i = 0; i < g_tape.count && param_idx < g_tape.n_params; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param) continue;
+        AM_AdamState* as = &g_tape.adam[param_idx];
+        if (as->acc_grad) {
+            int n = e->output->len;
+            if (as->acc_grad->len < n) n = as->acc_grad->len;
+            // Ensure grad exists
+            if (!e->grad) e->grad = am_array_new(n);
+            // Copy averaged accumulated grad into tape entry
+            for (int j = 0; j < n; j++) {
+                e->grad->data[j] = as->acc_grad->data[j] * scale;
+                as->acc_grad->data[j] = 0.0f; // zero for next round
+            }
         }
         param_idx++;
     }
@@ -3503,14 +3739,56 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
         if (arg2[0] && ctx) loss_val = ctx_float(ctx, arg2);
         am_tape_chuck_step(lr, loss_val);
       }
-      else if (!strcmp(subcmd, "PARAM")) {
+      else if (!strcmp(subcmd, "ADAMW_STEP") || !strcmp(subcmd, "ADAMW")) {
+        // TAPE ADAMW_STEP <lr> [weight_decay] [beta1] [beta2]
+        // TAPE ADAMW <lr> [weight_decay] [beta1] [beta2]
+        char a1[32]={0}, a2[32]={0}, a3[32]={0}, a4[32]={0};
+        sscanf(rest, "%31s %31s %31s %31s", a1, a2, a3, a4);
+        float lr = a1[0] ? ctx_float(ctx, a1) : 0.001f;
+        float wd = a2[0] ? ctx_float(ctx, a2) : 0.1f;
+        float b1 = a3[0] ? ctx_float(ctx, a3) : 0.9f;
+        float b2 = a4[0] ? ctx_float(ctx, a4) : 0.95f;
+        am_tape_adamw_step(lr, wd, b1, b2);
+#ifdef USE_CUDA
+        for (int pi = 0; pi < g_tape.count; pi++) {
+            if (g_tape.entries[pi].is_param && g_tape.entries[pi].output)
+                invalidate_gpu(g_tape.entries[pi].output);
+        }
+#endif
+      }
+      else if (!strcmp(subcmd, "CLIP_GRADS") || !strcmp(subcmd, "CLIP")) {
+        // TAPE CLIP_GRADS <max_norm> — gradient clipping by global norm
+        float max_norm = 1.0f;
+        if (rest[0]) max_norm = ctx_float(ctx, rest);
+        float norm = am_tape_clip_grads(max_norm);
+        // Store grad_norm in context for logging
+        if (ctx) {
+          char cmd[64]; snprintf(cmd, 64, "grad_norm = %.6f", norm);
+          am_exec(cmd);
+        }
+      }
+      else if (!strcmp(subcmd, "ACCUM_GRADS") || !strcmp(subcmd, "ACCUM")) {
+        // TAPE ACCUM_GRADS — accumulate param grads into buffer (for gradient accumulation)
+        am_tape_accum_grads();
+      }
+      else if (!strcmp(subcmd, "APPLY_ACCUM")) {
+        // TAPE APPLY_ACCUM <N> — average accumulated grads by N, copy to entries
+        int n_accum = 1;
+        if (rest[0]) n_accum = (int)ctx_float(ctx, rest);
+        if (n_accum < 1) n_accum = 1;
+        am_tape_apply_accum(n_accum);
+      }
+      else if (!strcmp(subcmd, "PARAM") || !strcmp(subcmd, "PARAM_NO_DECAY")) {
         // TAPE PARAM <var_name> — register variable as trainable parameter
+        // TAPE PARAM_NO_DECAY <var_name> — same but skip weight decay (for embeddings)
+        int nd = !strcmp(subcmd, "PARAM_NO_DECAY");
         char vname[AML_MAX_NAME] = {0};
         sscanf(rest, "%31s", vname);
         if (vname[0] && ctx) {
           AML_Var* v = resolve_var_full(ctx, vname);
           if (v && v->type == AML_TYPE_ARRAY && v->array) {
-            am_tape_record_param(v->array);
+            int idx = am_tape_record_param(v->array);
+            if (nd && idx >= 0) g_tape.entries[idx].no_decay = 1;
           }
         }
       }
@@ -3862,9 +4140,25 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             int n = va->array->len < vb->array->len ? va->array->len : vb->array->len;
             AM_Array* arr = am_array_new(n);
             if (!arr) return NULL;
+#ifdef USE_CUDA
+            if (va->array->d_data && va->array->gpu_valid &&
+                vb->array->d_data && vb->array->gpu_valid) {
+                out_arr_gpu: ;
+                arr->d_data = gpu_alloc(n);
+                if (arr->d_data) {
+                    gpu_add(arr->d_data, va->array->d_data, vb->array->d_data, n);
+                    arr->gpu_valid = 1;
+                    goto add_done;
+                }
+            }
+            ensure_cpu(va->array); ensure_cpu(vb->array);
+#endif
             for (int j = 0; j < n; j++)
                 arr->data[j] = va->array->data[j] + vb->array->data[j];
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            add_done: ;
+#endif
                 am_tape_record(arr, AM_OP_ADD, tape_ensure_entry(va->array), tape_ensure_entry(vb->array), 0);
             return arr;
         }
@@ -3880,9 +4174,24 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             int n = va->array->len < vb->array->len ? va->array->len : vb->array->len;
             AM_Array* arr = am_array_new(n);
             if (!arr) return NULL;
+#ifdef USE_CUDA
+            if (va->array->d_data && va->array->gpu_valid &&
+                vb->array->d_data && vb->array->gpu_valid) {
+                arr->d_data = gpu_alloc(n);
+                if (arr->d_data) {
+                    gpu_mul(arr->d_data, va->array->d_data, vb->array->d_data, n);
+                    arr->gpu_valid = 1;
+                    goto mul_done;
+                }
+            }
+            ensure_cpu(va->array); ensure_cpu(vb->array);
+#endif
             for (int j = 0; j < n; j++)
                 arr->data[j] = va->array->data[j] * vb->array->data[j];
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            mul_done: ;
+#endif
                 am_tape_record(arr, AM_OP_MUL, tape_ensure_entry(va->array), tape_ensure_entry(vb->array), 0);
             return arr;
         }
@@ -4051,10 +4360,24 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             AM_Array* out = am_array_new(n);
             if (!out) { if (owns_input) am_array_free(input_arr); return NULL; }
             for (int j = 0; j < n; j++) {
+#ifdef USE_CUDA
+            if (input_arr->d_data && input_arr->gpu_valid) {
+                out->d_data = gpu_alloc(n);
+                if (out->d_data) {
+                    gpu_silu(out->d_data, input_arr->d_data, n);
+                    out->gpu_valid = 1;
+                    goto silu_done;
+                }
+            }
+            ensure_cpu(input_arr);
+#endif
                 float x = input_arr->data[j];
                 out->data[j] = x / (1.0f + expf(-x));
             }
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            silu_done: ;
+#endif
                 am_tape_record(out, AM_OP_SILU, tape_ensure_entry(input_arr), -1, 0);
             // Don't free input_arr even if owns_input — tape may reference it
             return out;
@@ -4194,18 +4517,27 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             float* X = vx->array->data;
             float* Y = out->data;
 #ifdef USE_CUDA
-            // GPU: upload X,W → cuBLAS sgemm → download Y
+            // GPU tensor: keep data on GPU between ops
             {
-                float* d_W = gpu_alloc(out_dim * in_dim);
-                float* d_X = gpu_alloc(T * in_dim);
-                float* d_Y = gpu_alloc(T * out_dim);
-                if (d_W && d_X && d_Y) {
-                    gpu_upload(d_W, W, out_dim * in_dim);
-                    gpu_upload(d_X, X, T * in_dim);
-                    gpu_sgemm_nt(T, out_dim, in_dim, d_X, d_W, d_Y);
-                    gpu_download(Y, d_Y, T * out_dim);
+                ensure_gpu(vw->array);
+                ensure_gpu(vx->array);
+                if (vw->array->d_data && vx->array->d_data) {
+                    out->d_data = gpu_alloc(T * out_dim);
+                    if (out->d_data) {
+                        gpu_sgemm_nt(T, out_dim, in_dim,
+                                     vx->array->d_data, vw->array->d_data, out->d_data);
+                        out->gpu_valid = 1;
+                    }
                 }
-                gpu_free(d_W); gpu_free(d_X); gpu_free(d_Y);
+                if (!out->gpu_valid) {
+                    // CPU fallback with BLAS
+                    ensure_cpu(vw->array); ensure_cpu(vx->array);
+                    W = vw->array->data; X = vx->array->data; Y = out->data;
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                               T, out_dim, in_dim,
+                               1.0f, X, in_dim, W, in_dim,
+                               0.0f, Y, out_dim);
+                }
             }
 #elif defined(USE_BLAS)
             // BLAS batch: Y(T,out) = X(T,in) * W^T(in,out)
@@ -4247,6 +4579,17 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             if (T * D > vx->array->len) return NULL;
             AM_Array* out = am_array_new(T * D);
             if (!out) return NULL;
+#ifdef USE_CUDA
+            if (vx->array->d_data && vx->array->gpu_valid) {
+                out->d_data = gpu_alloc(T * D);
+                if (out->d_data) {
+                    gpu_rmsnorm(out->d_data, vx->array->d_data, T, D);
+                    out->gpu_valid = 1;
+                    goto rmsnorm_done;
+                }
+            }
+            ensure_cpu(vx->array);
+#endif
             float* Xr = vx->array->data;
             float* Or = out->data;
             #ifdef _OPENMP
@@ -4261,6 +4604,9 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
                 for (int d = 0; d < D; d++) o_t[d] = x_t[d] / rms;
             }
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            rmsnorm_done: ;
+#endif
                 am_tape_record3(out, AM_OP_SEQ_RMSNORM,
                     tape_ensure_entry(vx->array), -1, -1, (float)T, (float)D);
             return out;
@@ -4344,6 +4690,22 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             float scale = 1.0f / sqrtf((float)head_dim);
             AM_Array* out = am_array_new(T * D);
             if (!out) return NULL;
+#ifdef USE_CUDA
+            if (vq->array->d_data && vq->array->gpu_valid &&
+                vk->array->d_data && vk->array->gpu_valid &&
+                vv->array->d_data && vv->array->gpu_valid) {
+                out->d_data = gpu_alloc(T * D);
+                float* d_scores = gpu_scratch(5, n_heads * T * T);
+                if (out->d_data && d_scores) {
+                    gpu_multi_head_attention(vq->array->d_data, vk->array->d_data,
+                                             vv->array->d_data, out->d_data, d_scores,
+                                             T, D, n_heads);
+                    out->gpu_valid = 1;
+                    goto attn_done;
+                }
+            }
+            ensure_cpu(vq->array); ensure_cpu(vk->array); ensure_cpu(vv->array);
+#endif
             float* Qd = vq->array->data;
             float* Kd = vk->array->data;
             float* Vd = vv->array->data;
@@ -4389,6 +4751,9 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             free(scores_buf);
             #endif
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            attn_done: ;
+#endif
                 am_tape_record3(out, AM_OP_MH_CAUSAL_ATTN,
                     tape_ensure_entry(vq->array), tape_ensure_entry(vk->array),
                     tape_ensure_entry(vv->array), (float)T, (float)head_dim);
@@ -4410,6 +4775,19 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             if (T * V > vl->array->len || T > vt->array->len) return NULL;
             AM_Array* out = am_array_new(1);
             if (!out) return NULL;
+#ifdef USE_CUDA
+            if (vl->array->d_data && vl->array->gpu_valid) {
+                ensure_gpu(vt->array);
+                float* d_losses = gpu_scratch(6, T);
+                if (d_losses && vt->array->d_data) {
+                    float avg_loss = gpu_cross_entropy(vl->array->d_data,
+                                                       vt->array->d_data, d_losses, T, V);
+                    out->data[0] = avg_loss;
+                    goto ce_done;
+                }
+            }
+            ensure_cpu(vl->array); ensure_cpu(vt->array);
+#endif
             float total_loss = 0;
             for (int t = 0; t < T; t++) {
                 float* logits_t = vl->array->data + t * V;
@@ -4426,6 +4804,9 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             }
             out->data[0] = total_loss / T;
             if (am_tape_is_active())
+#ifdef USE_CUDA
+            ce_done: ;
+#endif
                 am_tape_record3(out, AM_OP_SEQ_CROSSENT,
                     tape_ensure_entry(vl->array), tape_ensure_entry(vt->array), -1,
                     (float)T, (float)V);

@@ -75,7 +75,31 @@ int    gpu_cache_weight(const char* name, const float* h_data, int len);
 float* gpu_get_weight(const char* name, int* len);
 void   gpu_mark_all_dirty(void);  // After adam step, mark for re-upload
 void   gpu_sync_dirty_weights(void); // Re-upload only changed weights
+float* gpu_scratch(int slot, int n_floats);
 
+
+// ── Attention kernel ──────────────────────────────────────────────
+void gpu_multi_head_attention(
+    const float* d_Q, const float* d_K, const float* d_V,
+    float* d_out, float* d_scores,
+    int T, int D, int n_heads);
+
+void gpu_multi_head_attention_backward(
+    const float* d_Q, const float* d_K, const float* d_V,
+    const float* d_scores,
+    const float* d_dout,
+    float* d_dQ, float* d_dK, float* d_dV,
+    float* d_scratch_TT, float* d_scratch_TT2,
+    int T, int D, int n_heads);
+
+// ── Cross-entropy kernel ──────────────────────────────────────────
+float gpu_cross_entropy(const float* d_logits, const float* d_targets,
+                        float* d_losses, int T, int V);
+
+void gpu_cross_entropy_backward(float* d_grad_logits,
+                                const float* d_logits,
+                                const float* d_targets,
+                                int T, int V);
 #ifdef __cplusplus
 }
 #endif

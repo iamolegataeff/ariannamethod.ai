@@ -393,3 +393,266 @@ extern "C" void gpu_sync_dirty_weights(void) {
     // For now, we re-upload from CPU after adam updates.
 }
 
+
+#define GPU_SCRATCH_SLOTS 8
+static float* g_scratch_buf[GPU_SCRATCH_SLOTS];
+static size_t g_scratch_sz[GPU_SCRATCH_SLOTS];
+
+extern "C" float* gpu_scratch(int slot, int n_floats) {
+    if (slot < 0 || slot >= GPU_SCRATCH_SLOTS) return NULL;
+    size_t bytes = (size_t)n_floats * sizeof(float);
+    if (bytes > g_scratch_sz[slot]) {
+        if (g_scratch_buf[slot]) cudaFree(g_scratch_buf[slot]);
+        cudaMalloc((void**)&g_scratch_buf[slot], bytes);
+        g_scratch_sz[slot] = bytes;
+    }
+    return g_scratch_buf[slot];
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Multi-head causal attention — GPU kernel
+// ═══════════════════════════════════════════════════════════════════
+//
+// Q,K,V: [T, D],  D = n_heads * head_dim
+// Output: [T, D]
+// Uses cublasSgemm per head for QK^T and attn*V
+// Custom kernel for causal softmax
+
+__global__ void kernel_causal_softmax(float* scores, int T, int n_heads) {
+    // scores[h * T * T + i * T + j]
+    // Apply causal mask (j > i -> -inf) then softmax per row
+    int h = blockIdx.x;
+    int i = blockIdx.y;
+    if (h >= n_heads || i >= T) return;
+
+    float* row = scores + h * T * T + i * T;
+
+    // Causal mask
+    for (int j = i + 1; j < T; j++)
+        row[j] = -1e10f;
+
+    // Find max
+    float mx = row[0];
+    for (int j = 1; j <= i; j++)
+        if (row[j] > mx) mx = row[j];
+
+    // Exp and sum
+    float sum = 0;
+    for (int j = 0; j <= i; j++) {
+        row[j] = expf(row[j] - mx);
+        sum += row[j];
+    }
+
+    // Normalize
+    float inv_sum = 1.0f / (sum + 1e-10f);
+    for (int j = 0; j < T; j++)
+        row[j] = (j <= i) ? row[j] * inv_sum : 0.0f;
+}
+
+extern "C" void gpu_multi_head_attention(
+    const float* d_Q, const float* d_K, const float* d_V,
+    float* d_out, float* d_scores,
+    int T, int D, int n_heads)
+{
+    if (!g_cublas) return;
+    int head_dim = D / n_heads;
+    float scale = 1.0f / sqrtf((float)head_dim);
+    float beta = 0.0f;
+
+    // QK^T per head: scores_h(T,T) = Q_h(T,hd) * K_h(T,hd)^T * scale
+    // Q_h at d_Q + h*head_dim, rows stride = D
+    // In col-major: C^T(T,T) = K_h * Q_h^T
+    for (int h = 0; h < n_heads; h++) {
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_T, CUBLAS_OP_N,
+            T, T, head_dim,
+            &scale,
+            d_K + h * head_dim, D,
+            d_Q + h * head_dim, D,
+            &beta,
+            d_scores + h * T * T, T));
+    }
+
+    // Causal softmax
+    dim3 grid(n_heads, T);
+    kernel_causal_softmax<<<grid, 1>>>(d_scores, T, n_heads);
+
+    // attn * V per head: out_h(T,hd) = scores_h(T,T) * V_h(T,hd)
+    // col-major: out_h^T(hd,T) = V_h^T(hd,T) * scores_h^T(T,T)
+    for (int h = 0; h < n_heads; h++) {
+        float alpha_v = 1.0f;
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            head_dim, T, T,
+            &alpha_v,
+            d_V + h * head_dim, D,
+            d_scores + h * T * T, T,
+            &beta,
+            d_out + h * head_dim, D));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Attention backward
+// ═══════════════════════════════════════════════════════════════════
+
+__global__ void kernel_softmax_backward(float* d_grad_scores,
+                                         const float* d_scores,
+                                         const float* d_grad_out_scores,
+                                         int T, int n_heads) {
+    int h = blockIdx.x;
+    int i = blockIdx.y;
+    if (h >= n_heads || i >= T) return;
+
+    const float* attn_row = d_scores + h * T * T + i * T;
+    const float* dout_row = d_grad_out_scores + h * T * T + i * T;
+    float* grad_row = d_grad_scores + h * T * T + i * T;
+
+    float dot = 0;
+    for (int j = 0; j <= i; j++)
+        dot += attn_row[j] * dout_row[j];
+
+    for (int j = 0; j < T; j++)
+        grad_row[j] = (j <= i) ? attn_row[j] * (dout_row[j] - dot) : 0.0f;
+}
+
+extern "C" void gpu_multi_head_attention_backward(
+    const float* d_Q, const float* d_K, const float* d_V,
+    const float* d_scores,
+    const float* d_dout,
+    float* d_dQ, float* d_dK, float* d_dV,
+    float* d_scratch_TT,
+    float* d_scratch_TT2,
+    int T, int D, int n_heads)
+{
+    if (!g_cublas) return;
+    int head_dim = D / n_heads;
+    float scale = 1.0f / sqrtf((float)head_dim);
+    float alpha = 1.0f, beta = 0.0f;
+
+    // Step 1: d_attn_weights[h](T,T) = dout_h(T,hd) * V_h(T,hd)^T
+    for (int h = 0; h < n_heads; h++) {
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_T, CUBLAS_OP_N,
+            T, T, head_dim,
+            &alpha,
+            d_V + h * head_dim, D,
+            d_dout + h * head_dim, D,
+            &beta,
+            d_scratch_TT2 + h * T * T, T));
+    }
+
+    // Step 2: softmax backward
+    dim3 grid(n_heads, T);
+    kernel_softmax_backward<<<grid, 1>>>(d_scratch_TT, d_scores, d_scratch_TT2, T, n_heads);
+
+    // Step 3: dV_h(T,hd) = scores_h^T(T,T) * dout_h(T,hd)
+    gpu_zero(d_dV, T * D);
+    for (int h = 0; h < n_heads; h++) {
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            head_dim, T, T,
+            &alpha,
+            d_dout + h * head_dim, D,
+            d_scores + h * T * T, T,
+            &beta,
+            d_dV + h * head_dim, D));
+    }
+
+    // Step 4: dQ_h(T,hd) = grad_scores_h(T,T) * K_h(T,hd) * scale
+    gpu_zero(d_dQ, T * D);
+    for (int h = 0; h < n_heads; h++) {
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            head_dim, T, T,
+            &scale,
+            d_K + h * head_dim, D,
+            d_scratch_TT + h * T * T, T,
+            &beta,
+            d_dQ + h * head_dim, D));
+    }
+
+    // Step 5: dK_h(T,hd) = grad_scores_h^T(T,T) * Q_h(T,hd) * scale
+    gpu_zero(d_dK, T * D);
+    for (int h = 0; h < n_heads; h++) {
+        CUBLAS_CHECK(cublasSgemm(g_cublas,
+            CUBLAS_OP_N, CUBLAS_OP_T,
+            head_dim, T, T,
+            &scale,
+            d_Q + h * head_dim, D,
+            d_scratch_TT + h * T * T, T,
+            &beta,
+            d_dK + h * head_dim, D));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Cross-entropy — GPU kernel
+// ═══════════════════════════════════════════════════════════════════
+
+__global__ void kernel_cross_entropy_forward(const float* logits, const float* targets,
+                                              float* losses, int T, int V) {
+    int t = blockIdx.x;
+    if (t >= T) return;
+
+    const float* l = logits + t * V;
+    int target = (int)targets[t];
+    if (target < 0 || target >= V) target = 0;
+
+    float mx = l[0];
+    for (int j = 1; j < V; j++)
+        if (l[j] > mx) mx = l[j];
+
+    float sum = 0;
+    for (int j = 0; j < V; j++)
+        sum += expf(l[j] - mx);
+
+    losses[t] = -((l[target] - mx) - logf(sum + 1e-10f));
+}
+
+__global__ void kernel_cross_entropy_backward(float* grad_logits,
+                                               const float* logits,
+                                               const float* targets,
+                                               int T, int V, float scale) {
+    int t = blockIdx.x;
+    if (t >= T) return;
+
+    const float* l = logits + t * V;
+    float* gl = grad_logits + t * V;
+    int target = (int)targets[t];
+    if (target < 0 || target >= V) target = 0;
+
+    float mx = l[0];
+    for (int j = 1; j < V; j++)
+        if (l[j] > mx) mx = l[j];
+
+    float sum = 0;
+    for (int j = 0; j < V; j++)
+        sum += expf(l[j] - mx);
+
+    float inv_sum = 1.0f / (sum + 1e-10f);
+    for (int j = 0; j < V; j++) {
+        float prob = expf(l[j] - mx) * inv_sum;
+        gl[j] = scale * (prob - (j == target ? 1.0f : 0.0f));
+    }
+}
+
+extern "C" float gpu_cross_entropy(const float* d_logits, const float* d_targets,
+                                    float* d_losses, int T, int V) {
+    kernel_cross_entropy_forward<<<T, 1>>>(d_logits, d_targets, d_losses, T, V);
+    float* h_losses = (float*)malloc(T * sizeof(float));
+    gpu_download(h_losses, d_losses, T);
+    float total = 0;
+    for (int t = 0; t < T; t++) total += h_losses[t];
+    free(h_losses);
+    return total / T;
+}
+
+extern "C" void gpu_cross_entropy_backward(float* d_grad_logits,
+                                            const float* d_logits,
+                                            const float* d_targets,
+                                            int T, int V) {
+    float scale = 1.0f / T;
+    kernel_cross_entropy_backward<<<T, 1>>>(d_grad_logits, d_logits, d_targets, T, V, scale);
+}

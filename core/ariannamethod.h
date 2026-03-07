@@ -260,6 +260,10 @@ typedef struct {
     // v4.0 Phase 2: matrix shape (0,0 = 1D array; rows>0, cols>0 = 2D matrix)
     int    rows;
     int    cols;
+#ifdef USE_CUDA
+    float* d_data;    // GPU device pointer
+    int    gpu_valid;  // 1 = GPU copy is current
+#endif
 } AM_Array;
 
 // Preprocessed line
@@ -576,12 +580,14 @@ typedef struct {
     float     aux;          // auxiliary scalar (target index for CE, scale for SCALE, T for seq ops)
     float     aux2;         // second auxiliary (D for seq ops, V for seq_cross_entropy)
     int       is_param;     // 1 = this is a trainable parameter (not freed on CLEAR)
+    int       no_decay;     // 1 = skip weight decay for this param (embeddings)
 } AM_TapeEntry;
 
 // Adam optimizer state per parameter
 typedef struct {
     AM_Array* m;            // first moment (mean of gradients)
     AM_Array* v;            // second moment (mean of squared gradients)
+    AM_Array* acc_grad;     // accumulated gradients for grad accumulation (NULL when not used)
     int       t;            // timestep counter
 } AM_AdamState;
 
@@ -652,6 +658,10 @@ int  am_tape_record3(AM_Array* output, int op, int p1, int p2, int p3, float aux
 int  am_tape_record_param(AM_Array* param);
 void am_tape_backward(int loss_idx);
 void am_tape_adam_step(float lr);
+void am_tape_adamw_step(float lr, float weight_decay, float beta1, float beta2);
+float am_tape_clip_grads(float max_norm);
+void am_tape_accum_grads(void);   // save param grads to acc_grad buffer (for grad accumulation)
+void am_tape_apply_accum(int n_accum); // apply accumulated grads (divide by n_accum, copy to entries)
 void am_tape_chuck_step(float lr, float loss_val);
 AM_Tape* am_tape_get(void);
 
