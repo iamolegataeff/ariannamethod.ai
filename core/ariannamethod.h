@@ -20,9 +20,17 @@
 
 #include <stdlib.h>  // for rand(), RAND_MAX
 #include <math.h>    // for fabsf, sinf, sqrtf, fmaxf, fminf, expf
-
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+// Compiled script execution
+void* am_compile(const char* script);
+int am_exec_compiled(void* cs);
+void am_free_compiled(void* cs);
+
+#ifdef __cplusplus
+}
 #endif
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -944,5 +952,9 @@ void am_persistent_clear(void);
 #ifdef __cplusplus
 }
 #endif
+
+
+// Compiled script execution — parse once, execute many
+
 
 #endif // ARIANNAMETHOD_H

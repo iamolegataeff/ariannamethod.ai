@@ -4049,6 +4049,9 @@ static int aml_call_func(AML_ExecCtx* ctx, AML_Func* f, float* args, int nargs, 
 //          scale(a, s), and user function calls that return arrays.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Forward declaration for bytecode dispatch
+static AM_Array* aml_array_dispatch(AML_ExecCtx* ctx, const char* fname, char arg_strs[][AML_MAX_NAME], int nargs);
+
 static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
     // skip whitespace
     while (*rhs == ' ') rhs++;
@@ -4105,6 +4108,11 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
         nargs++;
     }
 
+    return aml_array_dispatch(ctx, fname, arg_strs, nargs);
+}
+
+// Dispatch pre-parsed array function call (called from both interpreter and bytecode)
+static AM_Array* aml_array_dispatch(AML_ExecCtx* ctx, const char* fname, char arg_strs[][AML_MAX_NAME], int nargs) {
     // zeros(n) — create zero-initialized array
     if (strcasecmp(fname, "zeros") == 0 && nargs >= 1) {
         int n = (int)aml_eval(ctx, arg_strs[0]);
@@ -5243,6 +5251,419 @@ int am_exec(const char* script) {
         return 1;
     }
     return 0;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// BYTECODE COMPILATION — eliminate interpreter overhead
+// ═══════════════════════════════════════════════════════════════════
+//
+// am_compile() pre-parses each line into an opcode + pre-split args.
+// am_exec_compiled() executes opcodes via switch — no string matching.
+//
+// Eliminates per-line: 6 strncmp, strchr, fname parsing, 20+ strcasecmp
+// function dispatch, arg parsing, upcase, sscanf.
+
+enum {
+    BC_NOP = 0,
+    // TAPE commands
+    BC_TAPE_START, BC_TAPE_CLEAR, BC_TAPE_BACKWARD,
+    BC_TAPE_PARAM, BC_TAPE_PARAM_NO_DECAY,
+    BC_TAPE_ACCUM_GRADS, BC_TAPE_APPLY_ACCUM,
+    BC_TAPE_CLIP_GRADS, BC_TAPE_ADAMW_STEP,
+    // Array function calls: result = func(args...)
+    BC_CALL_SEQ_EMBED,      // h = seq_embed(wte, wpe, tokens, seq_len)
+    BC_CALL_SEQ_MATVEC,     // y = seq_matvec(W, x, seq_len)
+    BC_CALL_SEQ_RMSNORM,    // y = seq_rmsnorm(x, seq_len, dim)
+    BC_CALL_MULTI_HEAD_ATTN,// y = multi_head_attention(q,k,v,seq,dim,heads)
+    BC_CALL_SEQ_CROSS_ENTROPY, // loss = seq_cross_entropy(logits,targets,seq,vocab)
+    BC_CALL_ADD,            // y = add(a, b)
+    BC_CALL_MUL,            // y = mul(a, b)
+    BC_CALL_SILU,           // y = silu(x)
+    // Fallback — use interpreter
+    BC_FALLBACK,
+};
+
+typedef struct {
+    int opcode;
+    char result[AML_MAX_NAME];     // LHS variable name
+    char args[8][AML_MAX_NAME];    // pre-split argument strings
+    int nargs;
+    int orig_idx;                  // original line index (for error reporting)
+} AML_BytecodeOp;
+
+typedef struct {
+    AML_Line*       lines;
+    int             nlines;
+    AML_Functab     funcs;
+    AML_BytecodeOp* ops;
+    int             nops;
+} AM_Compiled;
+
+// ── Bytecode compiler: parse each line into opcode + args ──
+
+static int bc_parse_func_call(const char* rhs, char* fname, char args[][AML_MAX_NAME], int* nargs) {
+    // Parse: fname(arg1, arg2, ...) from RHS
+    while (*rhs == ' ') rhs++;
+    int fi = 0;
+    while ((isalnum((unsigned char)rhs[fi]) || rhs[fi] == '_') && fi < AML_MAX_NAME - 1) {
+        fname[fi] = rhs[fi]; fi++;
+    }
+    fname[fi] = 0;
+    const char* p = rhs + fi;
+    while (*p == ' ') p++;
+    if (*p != '(') return 0;
+    p++; // skip '('
+    *nargs = 0;
+    while (*p && *p != ')' && *nargs < 8) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ')') break;
+        int ai = 0;
+        int pdepth = 0;
+        while (*p && (pdepth > 0 || (*p != ',' && *p != ')')) && ai < AML_MAX_NAME - 1) {
+            if (*p == '(') pdepth++;
+            if (*p == ')') { if (pdepth > 0) pdepth--; else break; }
+            args[*nargs][ai++] = *p++;
+        }
+        while (ai > 0 && args[*nargs][ai-1] == ' ') ai--;
+        args[*nargs][ai] = 0;
+        (*nargs)++;
+    }
+    return 1;
+}
+
+static int bc_fname_to_opcode(const char* fname) {
+    if (strcasecmp(fname, "seq_embed") == 0) return BC_CALL_SEQ_EMBED;
+    if (strcasecmp(fname, "seq_matvec") == 0) return BC_CALL_SEQ_MATVEC;
+    if (strcasecmp(fname, "seq_rmsnorm") == 0) return BC_CALL_SEQ_RMSNORM;
+    if (strcasecmp(fname, "multi_head_attention") == 0) return BC_CALL_MULTI_HEAD_ATTN;
+    if (strcasecmp(fname, "seq_cross_entropy") == 0) return BC_CALL_SEQ_CROSS_ENTROPY;
+    if (strcasecmp(fname, "add") == 0) return BC_CALL_ADD;
+    if (strcasecmp(fname, "mul") == 0) return BC_CALL_MUL;
+    if (strcasecmp(fname, "silu") == 0) return BC_CALL_SILU;
+    return -1; // unknown
+}
+
+static void bc_compile_line(AML_BytecodeOp* op, const char* text, int idx) {
+    memset(op, 0, sizeof(*op));
+    op->orig_idx = idx;
+
+    // TAPE commands (start with "TAPE ")
+    if (strncasecmp(text, "TAPE ", 5) == 0) {
+        const char* sub = text + 5;
+        while (*sub == ' ') sub++;
+        if (strncasecmp(sub, "START", 5) == 0) { op->opcode = BC_TAPE_START; return; }
+        if (strncasecmp(sub, "CLEAR", 5) == 0) { op->opcode = BC_TAPE_CLEAR; return; }
+        if (strncasecmp(sub, "ACCUM_GRADS", 11) == 0) { op->opcode = BC_TAPE_ACCUM_GRADS; return; }
+        if (strncasecmp(sub, "BACKWARD ", 9) == 0) {
+            op->opcode = BC_TAPE_BACKWARD;
+            sscanf(sub + 9, "%31s", op->args[0]); op->nargs = 1; return;
+        }
+        if (strncasecmp(sub, "PARAM_NO_DECAY ", 15) == 0) {
+            op->opcode = BC_TAPE_PARAM_NO_DECAY;
+            sscanf(sub + 15, "%31s", op->args[0]); op->nargs = 1; return;
+        }
+        if (strncasecmp(sub, "PARAM ", 6) == 0) {
+            op->opcode = BC_TAPE_PARAM;
+            sscanf(sub + 6, "%31s", op->args[0]); op->nargs = 1; return;
+        }
+        if (strncasecmp(sub, "APPLY_ACCUM ", 12) == 0) {
+            op->opcode = BC_TAPE_APPLY_ACCUM;
+            sscanf(sub + 12, "%31s", op->args[0]); op->nargs = 1; return;
+        }
+        if (strncasecmp(sub, "CLIP_GRADS ", 11) == 0 || strncasecmp(sub, "CLIP ", 5) == 0) {
+            op->opcode = BC_TAPE_CLIP_GRADS;
+            const char* a = strchr(sub, ' ');
+            if (a) { while (*a == ' ') a++; snprintf(op->args[0], AML_MAX_NAME, "%s", a); }
+            op->nargs = 1; return;
+        }
+        if (strncasecmp(sub, "ADAMW_STEP ", 11) == 0 || strncasecmp(sub, "ADAMW ", 6) == 0) {
+            op->opcode = BC_TAPE_ADAMW_STEP;
+            const char* a = sub + (sub[5] == '_' ? 11 : 6);
+            sscanf(a, "%31s %31s %31s %31s", op->args[0], op->args[1], op->args[2], op->args[3]);
+            op->nargs = 4; return;
+        }
+        op->opcode = BC_FALLBACK; return;
+    }
+
+    // Assignment: var = expr
+    const char* eq = strchr(text, '=');
+    if (eq && eq > text && eq[1] != '=' && eq[-1] != '!' && eq[-1] != '<' && eq[-1] != '>') {
+        // Extract LHS var name
+        const char* p = text;
+        int ni = 0;
+        while (p < eq && ni < AML_MAX_NAME - 1) {
+            if (!isspace((unsigned char)*p)) op->result[ni++] = *p;
+            p++;
+        }
+        op->result[ni] = 0;
+
+        // Parse RHS as function call
+        const char* rhs = eq + 1;
+        while (*rhs == ' ') rhs++;
+        char fname[AML_MAX_NAME] = {0};
+        if (bc_parse_func_call(rhs, fname, op->args, &op->nargs)) {
+            int opc = bc_fname_to_opcode(fname);
+            if (opc >= 0) { op->opcode = opc; return; }
+        }
+        // Unknown function or not a function call
+        op->opcode = BC_FALLBACK; return;
+    }
+
+    op->opcode = BC_FALLBACK;
+}
+
+void* am_compile(const char* script) {
+    if (!script || !*script) return NULL;
+
+    AM_Compiled* c = (AM_Compiled*)calloc(1, sizeof(AM_Compiled));
+    if (!c) return NULL;
+
+    c->lines = (AML_Line*)malloc(AML_MAX_LINES * sizeof(AML_Line));
+    if (!c->lines) { free(c); return NULL; }
+
+    c->nlines = aml_preprocess(script, c->lines, AML_MAX_LINES);
+    if (c->nlines == 0) { free(c->lines); free(c); return NULL; }
+
+    // Pre-register builtins and functions
+    AML_ExecCtx tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.lines = c->lines;
+    tmp.nlines = c->nlines;
+    aml_register_builtins(&tmp);
+    aml_register_funcs(&tmp);
+    memcpy(&c->funcs, &tmp.funcs, sizeof(AML_Functab));
+
+    // Compile to bytecode
+    c->ops = (AML_BytecodeOp*)malloc(c->nlines * sizeof(AML_BytecodeOp));
+    if (!c->ops) { free(c->lines); free(c); return NULL; }
+    c->nops = c->nlines;
+    for (int i = 0; i < c->nlines; i++)
+        bc_compile_line(&c->ops[i], c->lines[i].text, i);
+
+    return c;
+}
+
+// ── Bytecode executor — direct dispatch, no string matching ──
+
+// Helper: resolve var to array (inlined, frequent operation)
+static inline AM_Array* bc_get_array(AML_ExecCtx* ctx, const char* name) {
+    AML_Var* v = resolve_var_full(ctx, name);
+    return (v && v->type == AML_TYPE_ARRAY) ? v->array : NULL;
+}
+
+static inline float bc_get_float(AML_ExecCtx* ctx, const char* name) {
+    float val = 0;
+    resolve_var(ctx, name, &val);
+    return val;
+}
+
+static inline void bc_set_array(AML_ExecCtx* ctx, const char* name, AM_Array* arr) {
+    if (arr) symtab_set_array(&ctx->globals, name, arr);
+}
+
+int am_exec_compiled(void* handle) {
+    if (!handle) return 0;
+    AM_Compiled* c = (AM_Compiled*)handle;
+    g_error[0] = 0;
+
+    AML_ExecCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.lines = c->lines;
+    ctx.nlines = c->nlines;
+    memcpy(&ctx.funcs, &c->funcs, sizeof(AML_Functab));
+    persistent_restore(&ctx.globals);
+    aml_register_builtins(&ctx);
+    aml_register_funcs(&ctx);
+
+    for (int i = 0; i < c->nops; i++) {
+        AML_BytecodeOp* op = &c->ops[i];
+        switch (op->opcode) {
+
+        case BC_NOP: break;
+
+        // ── TAPE commands ──
+        case BC_TAPE_START: am_tape_start(); break;
+        case BC_TAPE_CLEAR: am_tape_clear(); break;
+        case BC_TAPE_ACCUM_GRADS: am_tape_accum_grads(); break;
+
+        case BC_TAPE_PARAM:
+        case BC_TAPE_PARAM_NO_DECAY: {
+            AM_Array* arr = bc_get_array(&ctx, op->args[0]);
+            if (arr) {
+                int idx = am_tape_record_param(arr);
+                if (op->opcode == BC_TAPE_PARAM_NO_DECAY && idx >= 0)
+                    g_tape.entries[idx].no_decay = 1;
+            }
+            break;
+        }
+
+        case BC_TAPE_BACKWARD: {
+            AM_Array* arr = bc_get_array(&ctx, op->args[0]);
+            if (arr) {
+                int tidx = tape_find_entry(arr);
+                if (tidx >= 0) am_tape_backward(tidx);
+            }
+            break;
+        }
+
+        case BC_TAPE_APPLY_ACCUM: {
+            int n = (int)bc_get_float(&ctx, op->args[0]);
+            if (n < 1) n = 1;
+            am_tape_apply_accum(n);
+            break;
+        }
+
+        case BC_TAPE_CLIP_GRADS: {
+            float max_norm = bc_get_float(&ctx, op->args[0]);
+            if (max_norm <= 0) max_norm = 1.0f;
+            float norm = am_tape_clip_grads(max_norm);
+            symtab_set(&ctx.globals, "grad_norm", norm);
+            break;
+        }
+
+        case BC_TAPE_ADAMW_STEP: {
+            float lr = bc_get_float(&ctx, op->args[0]);
+            float wd = op->args[1][0] ? bc_get_float(&ctx, op->args[1]) : 0.1f;
+            float b1 = op->args[2][0] ? bc_get_float(&ctx, op->args[2]) : 0.9f;
+            float b2 = op->args[3][0] ? bc_get_float(&ctx, op->args[3]) : 0.95f;
+            am_tape_adamw_step(lr, wd, b1, b2);
+#ifdef USE_CUDA
+            for (int pi = 0; pi < g_tape.count; pi++) {
+                if (g_tape.entries[pi].is_param && g_tape.entries[pi].output)
+                    invalidate_gpu(g_tape.entries[pi].output);
+            }
+#endif
+            break;
+        }
+
+        // ── Array function calls — direct dispatch ──
+
+        case BC_CALL_ADD: {
+            AM_Array* a = bc_get_array(&ctx, op->args[0]);
+            AM_Array* b = bc_get_array(&ctx, op->args[1]);
+            if (a && b) {
+                int n = a->len < b->len ? a->len : b->len;
+                AM_Array* out = am_array_new(n);
+                if (out) {
+#ifdef USE_CUDA
+                    if (a->d_data && a->gpu_valid && b->d_data && b->gpu_valid) {
+                        out->d_data = gpu_alloc(n);
+                        if (out->d_data) { gpu_add(out->d_data, a->d_data, b->d_data, n); out->gpu_valid = 1; goto add_bc_done; }
+                    }
+                    ensure_cpu(a); ensure_cpu(b);
+#endif
+                    for (int j = 0; j < n; j++) out->data[j] = a->data[j] + b->data[j];
+#ifdef USE_CUDA
+                    add_bc_done:
+#endif
+                    if (am_tape_is_active())
+                        am_tape_record(out, AM_OP_ADD, tape_ensure_entry(a), tape_ensure_entry(b), 0);
+                    bc_set_array(&ctx, op->result, out);
+                }
+            }
+            break;
+        }
+
+        case BC_CALL_MUL: {
+            AM_Array* a = bc_get_array(&ctx, op->args[0]);
+            AM_Array* b = bc_get_array(&ctx, op->args[1]);
+            if (a && b) {
+                int n = a->len < b->len ? a->len : b->len;
+                AM_Array* out = am_array_new(n);
+                if (out) {
+#ifdef USE_CUDA
+                    if (a->d_data && a->gpu_valid && b->d_data && b->gpu_valid) {
+                        out->d_data = gpu_alloc(n);
+                        if (out->d_data) { gpu_mul(out->d_data, a->d_data, b->d_data, n); out->gpu_valid = 1; goto mul_bc_done; }
+                    }
+                    ensure_cpu(a); ensure_cpu(b);
+#endif
+                    for (int j = 0; j < n; j++) out->data[j] = a->data[j] * b->data[j];
+#ifdef USE_CUDA
+                    mul_bc_done:
+#endif
+                    if (am_tape_is_active())
+                        am_tape_record(out, AM_OP_MUL, tape_ensure_entry(a), tape_ensure_entry(b), 0);
+                    bc_set_array(&ctx, op->result, out);
+                }
+            }
+            break;
+        }
+
+        case BC_CALL_SILU: {
+            AM_Array* x = bc_get_array(&ctx, op->args[0]);
+            if (x) {
+                AM_Array* out = am_array_new(x->len);
+                if (out) {
+#ifdef USE_CUDA
+                    if (x->d_data && x->gpu_valid) {
+                        out->d_data = gpu_alloc(x->len);
+                        if (out->d_data) { gpu_silu(out->d_data, x->d_data, x->len); out->gpu_valid = 1; goto silu_bc_done; }
+                    }
+                    ensure_cpu(x);
+#endif
+                    for (int j = 0; j < x->len; j++) {
+                        float s = 1.0f / (1.0f + expf(-x->data[j]));
+                        out->data[j] = x->data[j] * s;
+                    }
+#ifdef USE_CUDA
+                    silu_bc_done:
+#endif
+                    if (am_tape_is_active())
+                        am_tape_record(out, AM_OP_SILU, tape_ensure_entry(x), -1, 0);
+                    bc_set_array(&ctx, op->result, out);
+                }
+            }
+            break;
+        }
+
+        // For the heavy ops (seq_matvec, seq_embed, seq_rmsnorm, attention, cross_entropy)
+        // we call the existing interpreter path for that single line — still avoids
+        // all the command parsing overhead, just reuses the array expr implementation
+        case BC_CALL_SEQ_EMBED:
+        case BC_CALL_SEQ_MATVEC:
+        case BC_CALL_SEQ_RMSNORM:
+        case BC_CALL_MULTI_HEAD_ATTN:
+        case BC_CALL_SEQ_CROSS_ENTROPY: {
+            static const char* bc_fnames[] = {
+                [BC_CALL_SEQ_EMBED] = "seq_embed",
+                [BC_CALL_SEQ_MATVEC] = "seq_matvec",
+                [BC_CALL_SEQ_RMSNORM] = "seq_rmsnorm",
+                [BC_CALL_MULTI_HEAD_ATTN] = "multi_head_attention",
+                [BC_CALL_SEQ_CROSS_ENTROPY] = "seq_cross_entropy",
+            };
+            AM_Array* out = aml_array_dispatch(&ctx, bc_fnames[op->opcode], op->args, op->nargs);
+            if (out) bc_set_array(&ctx, op->result, out);
+            break;
+        }
+
+        case BC_FALLBACK:
+        default:
+            aml_exec_line(&ctx, op->orig_idx);
+            break;
+        }
+
+        if (ctx.error[0]) break;
+    }
+
+    persistent_save(&ctx.globals);
+    symtab_clear_arrays(&ctx.globals);
+
+    if (ctx.error[0]) {
+        snprintf(g_error, sizeof(g_error), "%s", ctx.error);
+        return 1;
+    }
+    return 0;
+}
+
+void am_free_compiled(void* handle) {
+    if (!handle) return;
+    AM_Compiled* c = (AM_Compiled*)handle;
+    if (c->lines) free(c->lines);
+    if (c->ops) free(c->ops);
+    free(c);
 }
 
 int am_exec_file(const char* path) {

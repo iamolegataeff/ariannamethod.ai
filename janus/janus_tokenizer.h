@@ -62,7 +62,7 @@ static void tok_init(EvolvingTokenizer* t, long enable_after,
 
 // ── Pair hash table ──────────────────────────────────────────────
 
-#define PHT_SIZE 65536
+#define PHT_SIZE 262144
 #define PHT_MASK (PHT_SIZE - 1)
 
 typedef struct { int a, b, count, used; } PairSlot;

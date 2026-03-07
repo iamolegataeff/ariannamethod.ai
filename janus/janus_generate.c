@@ -1,10 +1,10 @@
-// janus_generate.c — Interactive chat with Janus (v3: proper SwiGLU FFN)
-// Loads checkpoint + tokenizer, runs forward-only AML, samples text.
+// janus_generate.c — Interactive text generation with Janus
+// v4: LEFT-ALIGNED prompt, dynamic seq_len, NO chat template
 //
 // Usage: ./janus_generate <checkpoint> [--temp F] [--max-tokens N] [--top-k N]
 //
 // Build:
-//   cc -O3 -o janus_generate janus_generate.c core/ariannamethod.c -lm -lpthread
+//   cc -O3 -I. -o janus_generate janus_generate.c core/ariannamethod.c -lm -lpthread
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +32,6 @@ static int load_checkpoint(GenConfig* cfg, const char* path) {
     cfg->n_layers = hdr[4]; cfg->seq_len = hdr[5];
     int step = hdr[6];
     cfg->hidden_dim = hdr[7];
-    // Old checkpoints have hidden_dim=0 (square FFN)
     if (cfg->hidden_dim <= 0) cfg->hidden_dim = cfg->n_embd;
     
     printf("Checkpoint: step %d, V=%d D=%d hidden=%d H=%d L=%d seq=%d\n",
@@ -52,7 +51,6 @@ static int load_checkpoint(GenConfig* cfg, const char* path) {
         free(buf);
     }
     for (int l = 0; l < cfg->n_layers; l++) {
-        // Attention: wq, wk, wv, wo — [n_embd, n_embd]
         const char* attn_sfx[] = {"wq", "wk", "wv", "wo", NULL};
         for (int s = 0; attn_sfx[s]; s++) {
             char name[32]; snprintf(name, 32, "%s%d", attn_sfx[s], l);
@@ -62,30 +60,17 @@ static int load_checkpoint(GenConfig* cfg, const char* path) {
             am_set_var_matrix(name, buf, cfg->n_embd, cfg->n_embd);
             free(buf);
         }
-        // FFN: w1_[hidden,embd], w3_[hidden,embd], w2_[embd,hidden]
         {
             char name[32]; int len; float* buf;
-            
-            snprintf(name, 32, "w1_%d", l);
-            fread(&len, sizeof(int), 1, f);
-            buf = (float*)malloc(len * sizeof(float));
-            fread(buf, sizeof(float), len, f);
-            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd);
-            free(buf);
-            
-            snprintf(name, 32, "w3_%d", l);
-            fread(&len, sizeof(int), 1, f);
-            buf = (float*)malloc(len * sizeof(float));
-            fread(buf, sizeof(float), len, f);
-            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd);
-            free(buf);
-            
-            snprintf(name, 32, "w2_%d", l);
-            fread(&len, sizeof(int), 1, f);
-            buf = (float*)malloc(len * sizeof(float));
-            fread(buf, sizeof(float), len, f);
-            am_set_var_matrix(name, buf, cfg->n_embd, cfg->hidden_dim);
-            free(buf);
+            snprintf(name, 32, "w1_%d", l); fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float)); fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd); free(buf);
+            snprintf(name, 32, "w3_%d", l); fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float)); fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->hidden_dim, cfg->n_embd); free(buf);
+            snprintf(name, 32, "w2_%d", l); fread(&len, sizeof(int), 1, f);
+            buf = (float*)malloc(len * sizeof(float)); fread(buf, sizeof(float), len, f);
+            am_set_var_matrix(name, buf, cfg->n_embd, cfg->hidden_dim); free(buf);
         }
     }
     fclose(f);
@@ -149,41 +134,42 @@ static void generate(GenConfig* cfg, EvolvingTokenizer* tok, const char* fwd,
     int prompt_len = tok_encode_raw(tok, (const unsigned char*)prompt_text,
                                      strlen(prompt_text), prompt_ids, 8192);
 
+    // LEFT-ALIGN: prompt starts at position 0
     int ctx = prompt_len < S ? prompt_len : S;
-    int start = S - ctx;
     for (int i = 0; i < ctx; i++)
-        tokens[start + i] = (float)prompt_ids[prompt_len - ctx + i];
-
-    char decoded_buf[1024] = {0};
-    int decoded_pos = 0;
+        tokens[i] = (float)prompt_ids[prompt_len - ctx + i];
+    int cur_len = ctx;
 
     for (int t = 0; t < max_tok; t++) {
-        am_set_var_array("tokens", tokens, S);
+        // Dynamic seq_len = only real tokens
+        char cmd[64]; snprintf(cmd, 64, "seq_len = %d", cur_len);
+        am_exec(cmd);
+
+        am_set_var_array("tokens", tokens, cur_len);
         if (am_exec(fwd) != 0) { fprintf(stderr, "\n[AML error: %s]\n", am_get_error()); break; }
 
         int llen = 0;
         const float* all = am_get_var_array("logits", &llen);
         if (!all || llen < V) break;
 
-        int next = sample_topk(all + (S-1)*V, V, temp, topk);
+        // Sample from LAST real position
+        int next = sample_topk(all + (cur_len-1)*V, V, temp, topk);
 
         unsigned char out[64];
         int out_len = tok_decode_token(tok, next, out, 64);
-        for (int i = 0; i < out_len; i++) {
-            putchar(out[i]);
-            if (decoded_pos < 1023)
-                decoded_buf[decoded_pos++] = out[i];
-        }
+        for (int i = 0; i < out_len; i++) putchar(out[i]);
         fflush(stdout);
 
-        if (decoded_pos >= 8 && strstr(decoded_buf + (decoded_pos > 64 ? decoded_pos - 64 : 0), "<|user|>")) {
-            printf("\n");
-            break;
+        // Append or slide
+        if (cur_len < S) {
+            tokens[cur_len] = (float)next;
+            cur_len++;
+        } else {
+            for (int i = 0; i < S-1; i++) tokens[i] = tokens[i+1];
+            tokens[S-1] = (float)next;
         }
-
-        for (int i = 0; i < S-1; i++) tokens[i] = tokens[i+1];
-        tokens[S-1] = (float)next;
     }
+    printf("\n");
     free(tokens);
 }
 
@@ -214,7 +200,6 @@ int main(int argc, char** argv) {
     {
         char tpath[512];
         snprintf(tpath, 512, "%s", cfg.ckpt_path);
-        // Fix tokenizer path: replace "ckpt_step" with "tok_step"
         char* p = strstr(tpath, "ckpt_step");
         if (p) { memmove(p + 3, p + 4, strlen(p + 4) + 1); memcpy(p, "tok", 3); }
         if (tok_load(&tok, tpath) == 0) {
@@ -231,30 +216,26 @@ int main(int argc, char** argv) {
                  (long)cfg.n_layers*4*cfg.n_embd*cfg.n_embd +
                  (long)cfg.n_layers*(2*cfg.hidden_dim*cfg.n_embd + cfg.n_embd*cfg.hidden_dim);
     printf("═══════════════════════════════════════════════════\n");
-    printf("  JANUS CHAT — %.2fM params, vocab=%d (%s)\n",
+    printf("  JANUS — %.2fM params, vocab=%d (%s)\n",
            (double)total / 1e6,
            cfg.vocab_size, tok.bpe_enabled ? "BPE" : "byte-level");
     printf("  D=%d hidden=%d (%.1fx) heads=%d layers=%d\n",
            cfg.n_embd, cfg.hidden_dim, (float)cfg.hidden_dim/cfg.n_embd,
            cfg.n_heads, cfg.n_layers);
     printf("  temp=%.2f, top_k=%d, max_tokens=%d\n", cfg.temperature, cfg.top_k, cfg.max_tokens);
-    printf("  Empty line = quit.\n");
+    printf("  Type text to continue. Empty line = quit.\n");
     printf("═══════════════════════════════════════════════════\n\n");
 
     char input[4096];
     while (1) {
-        printf("You> "); fflush(stdout);
+        printf("> "); fflush(stdout);
         if (!fgets(input, sizeof(input), stdin)) break;
         int len = strlen(input);
         while (len > 0 && (input[len-1]=='\n' || input[len-1]=='\r')) input[--len] = 0;
         if (len == 0) break;
 
-        char prompt[8192];
-        snprintf(prompt, sizeof(prompt), "<|user|>\n%s\n<|assistant|>\n", input);
-
-        printf("Yent> "); fflush(stdout);
-        generate(&cfg, &tok, fwd, prompt, cfg.temperature, cfg.max_tokens, cfg.top_k);
-        printf("\n");
+        // Raw text completion — NO chat template
+        generate(&cfg, &tok, fwd, input, cfg.temperature, cfg.max_tokens, cfg.top_k);
     }
 
     free(fwd);

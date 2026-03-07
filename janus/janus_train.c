@@ -12,8 +12,13 @@
 //   --log-every N    log interval (default: 10)
 //   --save-every N   checkpoint interval (default: 100)
 //   --resume PATH    resume from checkpoint
-//   --bpe-after N    enable BPE after N bytes (default: 20000)
-//   --bpe-merges N   merges per round (default: 384)
+//   --min-lr F       min LR for cosine decay (default: 3e-5)
+//   --weight-decay F AdamW weight decay (default: 0.1)
+//   --grad-clip F    gradient clipping (default: 1.0)
+//   --beta1/beta2 F  Adam betas (default: 0.9/0.95)
+//   --warmup-steps N LR warmup (default: 300)
+//   --bpe-after N    enable BPE after N bytes (default: 1)
+//   --bpe-merges N   merges per round (default: 2000)
 //   --bpe-retrain N  retrain every N bytes (default: 4000)
 //   --evolve-every N check tokenizer evolution every N steps (default: 500)
 //
@@ -48,6 +53,13 @@ typedef struct {
     int    n_layers;
     int    seq_len;
     float  lr;
+    float  min_lr;        // minimum LR for cosine decay (lr * 0.1)
+    float  weight_decay;  // AdamW weight decay (0.1)
+    float  grad_clip;     // gradient clipping max norm (1.0)
+    float  beta1;         // Adam beta1 (0.9)
+    float  beta2;         // Adam beta2 (0.95 for transformers)
+    int    grad_accum;    // gradient accumulation steps (effective batch = grad_accum)
+    int    warmup_steps;  // LR warmup steps
     int    total_steps;
     int    log_every;
     int    save_every;
@@ -77,7 +89,7 @@ static int compute_hidden_dim(int n_embd) {
 #define DL_HF_CONFIG  "sample-10BT"
 #define DL_HF_SPLIT   "train"
 #define DL_CHUNK_SIZE  100
-#define DL_TOTAL_ROWS  5000
+#define DL_TOTAL_ROWS  50000
 #define DL_MIN_SIZE    100000
 
 static long hf_extract_texts(const char* json, long json_len, FILE* out) {
@@ -253,13 +265,12 @@ static void data_encode(DataLoader* dl, EvolvingTokenizer* tok) {
 }
 
 static void data_get_batch(DataLoader* dl, float* tokens, float* targets, int seq_len) {
+    // Random position each batch — prevents memorizing data order
+    dl->pos = rand() % (dl->ids_len - seq_len - 1);
     for (int i = 0; i < seq_len; i++) {
-        long idx = (dl->pos + i) % dl->ids_len;
-        long idx_next = (dl->pos + i + 1) % dl->ids_len;
-        tokens[i] = (float)dl->ids[idx];
-        targets[i] = (float)dl->ids[idx_next];
+        tokens[i] = (float)dl->ids[dl->pos + i];
+        targets[i] = (float)dl->ids[dl->pos + i + 1];
     }
-    dl->pos = (dl->pos + seq_len) % dl->ids_len;
 }
 
 static void data_free(DataLoader* dl) {
@@ -307,26 +318,29 @@ static void init_weights(TrainConfig* cfg) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Model script — forward + backward + adam
+// Model scripts:
+//   forward_script — TAPE START + params + forward + backward + accum grads + clear
+//   step_script    — TAPE START + params + forward + backward + apply accum + clip + adamw + clear
+//
+// For grad_accum=1: just use step_script every step (no accumulation)
+// For grad_accum>1: run forward_script (N-1) times, then step_script once
 // ═══════════════════════════════════════════════════════════════════
 
-static char* generate_model_script(TrainConfig* cfg) {
-    int bufsize = cfg->n_layers * 768 + 1024;
-    char* s = (char*)malloc(bufsize);
-    if (!s) return NULL;
-    int n = 0;
-
-    n += snprintf(s + n, bufsize - n, "TAPE START\nTAPE PARAM wte\nTAPE PARAM wpe\n");
+static void build_tape_header(char* s, int* n, int bufsize, TrainConfig* cfg) {
+    *n += snprintf(s + *n, bufsize - *n, "TAPE START\nTAPE PARAM_NO_DECAY wte\nTAPE PARAM_NO_DECAY wpe\n");
     for (int l = 0; l < cfg->n_layers; l++) {
-        n += snprintf(s + n, bufsize - n,
+        *n += snprintf(s + *n, bufsize - *n,
             "TAPE PARAM wq%d\nTAPE PARAM wk%d\nTAPE PARAM wv%d\nTAPE PARAM wo%d\n"
             "TAPE PARAM w1_%d\nTAPE PARAM w3_%d\nTAPE PARAM w2_%d\n",
             l, l, l, l, l, l, l);
     }
-    n += snprintf(s + n, bufsize - n, "TAPE PARAM lm_head\n");
-    n += snprintf(s + n, bufsize - n, "h = seq_embed(wte, wpe, tokens, seq_len)\n");
+    *n += snprintf(s + *n, bufsize - *n, "TAPE PARAM lm_head\n");
+}
+
+static void build_forward_body(char* s, int* n, int bufsize, TrainConfig* cfg) {
+    *n += snprintf(s + *n, bufsize - *n, "h = seq_embed(wte, wpe, tokens, seq_len)\n");
     for (int l = 0; l < cfg->n_layers; l++) {
-        n += snprintf(s + n, bufsize - n,
+        *n += snprintf(s + *n, bufsize - *n,
             "h_norm = seq_rmsnorm(h, seq_len, n_embd)\n"
             "q = seq_matvec(wq%d, h_norm, seq_len)\n"
             "k = seq_matvec(wk%d, h_norm, seq_len)\n"
@@ -343,11 +357,41 @@ static char* generate_model_script(TrainConfig* cfg) {
             "h = add(h, mlp_proj)\n",
             l, l, l, l, l, l, l);
     }
-    n += snprintf(s + n, bufsize - n,
+    *n += snprintf(s + *n, bufsize - *n,
         "h_norm = seq_rmsnorm(h, seq_len, n_embd)\n"
         "logits = seq_matvec(lm_head, h_norm, seq_len)\n"
         "loss = seq_cross_entropy(logits, targets, seq_len, vocab_size)\n"
-        "TAPE BACKWARD loss\nTAPE ADAM_STEP lr\nTAPE CLEAR\n");
+        "TAPE BACKWARD loss\n");
+}
+
+// forward_script: forward + backward + accumulate grads + clear tape (grads saved in acc_grad)
+static char* generate_forward_script(TrainConfig* cfg) {
+    int bufsize = cfg->n_layers * 768 + 1024;
+    char* s = (char*)malloc(bufsize);
+    if (!s) return NULL;
+    int n = 0;
+    build_tape_header(s, &n, bufsize, cfg);
+    build_forward_body(s, &n, bufsize, cfg);
+    n += snprintf(s + n, bufsize - n,
+        "TAPE ACCUM_GRADS\n"
+        "TAPE CLEAR\n");
+    return s;
+}
+
+// step_script: forward + backward + apply accumulated grads + clip + adamw + clear
+static char* generate_step_script(TrainConfig* cfg) {
+    int bufsize = cfg->n_layers * 768 + 1024;
+    char* s = (char*)malloc(bufsize);
+    if (!s) return NULL;
+    int n = 0;
+    build_tape_header(s, &n, bufsize, cfg);
+    build_forward_body(s, &n, bufsize, cfg);
+    n += snprintf(s + n, bufsize - n,
+        "TAPE ACCUM_GRADS\n"
+        "TAPE APPLY_ACCUM grad_accum\n"
+        "TAPE CLIP_GRADS grad_clip\n"
+        "TAPE ADAMW_STEP lr weight_decay beta1 beta2\n"
+        "TAPE CLEAR\n");
     return s;
 }
 
@@ -476,10 +520,17 @@ static int load_checkpoint(TrainConfig* cfg, const char* path) {
 static void parse_args(int argc, char** argv, TrainConfig* cfg) {
     cfg->vocab_size = TOK_BASE;
     cfg->n_embd = 128; cfg->n_heads = 4; cfg->n_layers = 4;
-    cfg->seq_len = 128; cfg->lr = 0.001f;
+    cfg->seq_len = 256; cfg->lr = 3e-4f;
+    cfg->min_lr = 3e-5f;           // 10x decay (matches arianna.c)
+    cfg->weight_decay = 0.1f;      // AdamW weight decay
+    cfg->grad_clip = 1.0f;         // gradient clipping
+    cfg->beta1 = 0.9f;             // Adam beta1
+    cfg->beta2 = 0.95f;            // Adam beta2 (0.95 for transformers)
+    cfg->grad_accum = 4;           // gradient accumulation (effective batch = 4)
+    cfg->warmup_steps = 300;       // warmup steps
     cfg->total_steps = 1000; cfg->log_every = 10; cfg->save_every = 100;
     cfg->evolve_every = 500;
-    cfg->bpe_after = 20000; cfg->bpe_merges = 384; cfg->bpe_retrain = 4000;
+    cfg->bpe_after = 1; cfg->bpe_merges = 2000; cfg->bpe_retrain = 4000;
     cfg->hidden_dim = 0;  // computed after n_embd is set
     memset(cfg->data_path, 0, 512); memset(cfg->model_path, 0, 512);
     memset(cfg->resume_path, 0, 512); memset(cfg->log_path, 0, 512);
@@ -500,25 +551,39 @@ static void parse_args(int argc, char** argv, TrainConfig* cfg) {
         else if (!strcmp(argv[i], "--model") && i+1 < argc)         snprintf(cfg->model_path, 512, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--resume") && i+1 < argc)        snprintf(cfg->resume_path, 512, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--log-file") && i+1 < argc)      snprintf(cfg->log_path, 512, "%s", argv[++i]);
+        else if (!strcmp(argv[i], "--min-lr") && i+1 < argc)         cfg->min_lr = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--weight-decay") && i+1 < argc)  cfg->weight_decay = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--grad-clip") && i+1 < argc)     cfg->grad_clip = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--beta1") && i+1 < argc)         cfg->beta1 = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--beta2") && i+1 < argc)         cfg->beta2 = (float)atof(argv[++i]);
+        else if (!strcmp(argv[i], "--warmup-steps") && i+1 < argc)  cfg->warmup_steps = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--grad-accum") && i+1 < argc)    cfg->grad_accum = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bpe-after") && i+1 < argc)     cfg->bpe_after = atol(argv[++i]);
         else if (!strcmp(argv[i], "--bpe-merges") && i+1 < argc)    cfg->bpe_merges = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bpe-retrain") && i+1 < argc)   cfg->bpe_retrain = atol(argv[++i]);
         else if (!strcmp(argv[i], "--help")) {
             printf("Usage: janus_train <text_file> [options]\n"
-                   "  --steps N         training steps\n"
-                   "  --lr F            learning rate\n"
-                   "  --seq-len N       sequence length\n"
-                   "  --n-embd N        embedding dim\n"
-                   "  --n-heads N       attention heads\n"
-                   "  --n-layers N      transformer layers\n"
+                   "  --steps N         training steps (default: 1000)\n"
+                   "  --lr F            learning rate (default: 3e-4)\n"
+                   "  --min-lr F        min LR for cosine decay (default: 3e-5)\n"
+                   "  --weight-decay F  AdamW weight decay (default: 0.1)\n"
+                   "  --grad-clip F     gradient clipping max norm (default: 1.0)\n"
+                   "  --beta1 F         Adam beta1 (default: 0.9)\n"
+                   "  --beta2 F         Adam beta2 (default: 0.95)\n"
+                   "  --warmup-steps N  LR warmup steps (default: 300)\n"
+                   "  --grad-accum N    gradient accumulation steps (default: 4)\n"
+                   "  --seq-len N       sequence length (default: 256)\n"
+                   "  --n-embd N        embedding dim (default: 128)\n"
+                   "  --n-heads N       attention heads (default: 4)\n"
+                   "  --n-layers N      transformer layers (default: 4)\n"
                    "  --hidden-dim N    FFN hidden dim (default: 2.67x n_embd)\n"
-                   "  --log-every N     log interval\n"
-                   "  --save-every N    checkpoint interval\n"
-                   "  --evolve-every N  tokenizer evolution check interval\n"
+                   "  --log-every N     log interval (default: 10)\n"
+                   "  --save-every N    checkpoint interval (default: 100)\n"
+                   "  --evolve-every N  tokenizer evolution interval (default: 500)\n"
                    "  --resume PATH     resume from checkpoint\n"
-                   "  --bpe-after N     enable BPE after N bytes (default 20000)\n"
-                   "  --bpe-merges N    merges per round (default 384)\n"
-                   "  --bpe-retrain N   retrain every N bytes (default 4000)\n");
+                   "  --bpe-after N     enable BPE after N bytes (default: 1)\n"
+                   "  --bpe-merges N    merges per round (default: 2000)\n"
+                   "  --bpe-retrain N   retrain every N bytes (default: 4000)\n");
             exit(0);
         }
     }
@@ -547,6 +612,7 @@ static void trainlog(const char* fmt, ...) {
 }
 
 int main(int argc, char** argv) {
+    srand((unsigned)time(NULL));
     TrainConfig cfg;
     parse_args(argc, argv, &cfg);
 
@@ -556,7 +622,7 @@ int main(int argc, char** argv) {
     }
 
     printf("═══════════════════════════════════════════════════\n");
-    printf("  JANUS v3 — SwiGLU FFN + EvolvingTokenizer\n");
+    printf("  JANUS v4 — AdamW + SwiGLU + EvolvingTokenizer\n");
     printf("  No Python. No PyTorch. BPE grows during training.\n");
     printf("═══════════════════════════════════════════════════\n");
     printf("Data:       %s\n", cfg.data_path);
@@ -565,7 +631,10 @@ int main(int argc, char** argv) {
     printf("Heads:      %d (head_dim=%d)\n", cfg.n_heads, cfg.n_embd / cfg.n_heads);
     printf("Layers:     %d\n", cfg.n_layers);
     printf("Seq len:    %d\n", cfg.seq_len);
-    printf("LR:         %.6f\n", cfg.lr);
+    printf("LR:         %.6f → %.6f (cosine, warmup=%d)\n", cfg.lr, cfg.min_lr, cfg.warmup_steps);
+    printf("AdamW:      wd=%.3f beta1=%.3f beta2=%.3f clip=%.1f\n",
+           cfg.weight_decay, cfg.beta1, cfg.beta2, cfg.grad_clip);
+    printf("Batch:      grad_accum=%d (effective batch=%d)\n", cfg.grad_accum, cfg.grad_accum);
     printf("Steps:      %d\n", cfg.total_steps);
     printf("BPE:        after %ld bytes, %d merges/round, retrain every %ld bytes\n",
            cfg.bpe_after, cfg.bpe_merges, cfg.bpe_retrain);
@@ -612,13 +681,14 @@ int main(int argc, char** argv) {
 
     data_encode(&dl, &tok);
 
-    if (dl.ids_len < cfg.seq_len + 1) {
+    if (dl.ids_len < cfg.seq_len + 2) {
         fprintf(stderr, "ERROR: encoded data too small (%ld tokens) for seq_len %d\n",
                 dl.ids_len, cfg.seq_len); return 1;
     }
 
-    char* model_script = generate_model_script(&cfg);
-    if (!model_script) { fprintf(stderr, "ERROR: OOM\n"); return 1; }
+    char* forward_script = generate_forward_script(&cfg);
+    char* step_script = generate_step_script(&cfg);
+    if (!forward_script || !step_script) { fprintf(stderr, "ERROR: OOM\n"); return 1; }
 
     am_init();
     am_persistent_mode(1);
@@ -627,11 +697,23 @@ int main(int argc, char** argv) {
 #endif
 
     {
-        char hyper[256];
+        char hyper[512];
         snprintf(hyper, sizeof(hyper),
-                 "n_embd = %d\nn_heads = %d\nn_layer = %d\nvocab_size = %d\nseq_len = %d\nlr = %.6f\n",
-                 cfg.n_embd, cfg.n_heads, cfg.n_layers, cfg.vocab_size, cfg.seq_len, cfg.lr);
+                 "n_embd = %d\nn_heads = %d\nn_layer = %d\nvocab_size = %d\nseq_len = %d\n"
+                 "lr = %.6f\nweight_decay = %.6f\ngrad_clip = %.6f\nbeta1 = %.6f\nbeta2 = %.6f\n"
+                 "grad_accum = %d\n",
+                 cfg.n_embd, cfg.n_heads, cfg.n_layers, cfg.vocab_size, cfg.seq_len,
+                 cfg.lr, cfg.weight_decay, cfg.grad_clip, cfg.beta1, cfg.beta2,
+                 cfg.grad_accum);
         am_exec(hyper);
+    }
+
+    // Pre-compile training scripts for fast execution
+    void* compiled_fwd = am_compile(forward_script);
+    void* compiled_step = am_compile(step_script);
+    if (!compiled_fwd || !compiled_step) {
+        fprintf(stderr, "ERROR: failed to compile training scripts\n");
+        return 1;
     }
 
     int start_step = 0;
@@ -658,17 +740,39 @@ int main(int argc, char** argv) {
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
     for (int step = start_step + 1; step <= cfg.total_steps; step++) {
-        data_get_batch(&dl, tokens, targets, cfg.seq_len);
-        am_set_var_array("tokens", tokens, cfg.seq_len);
-        am_set_var_array("targets", targets, cfg.seq_len);
+        // Cosine LR schedule with warmup (matches PyTorch/nanoGPT)
+        float lr;
+        if (step <= cfg.warmup_steps) {
+            lr = cfg.lr * (float)step / (float)cfg.warmup_steps;
+        } else {
+            float decay_ratio = (float)(step - cfg.warmup_steps) /
+                               (float)(cfg.total_steps - cfg.warmup_steps);
+            float coeff = 0.5f * (1.0f + cosf(3.14159265f * decay_ratio));
+            lr = cfg.min_lr + coeff * (cfg.lr - cfg.min_lr);
+        }
+        { char cmd[64]; snprintf(cmd, 64, "lr = %.8f", lr); am_exec(cmd); }
 
-        int rc = am_exec(model_script);
-        if (rc != 0) {
-            fprintf(stderr, "ERROR at step %d: %s\n", step, am_get_error());
-            break;
+        // Gradient accumulation: run forward+backward N times, step once
+        float micro_loss_sum = 0;
+        int ga = cfg.grad_accum > 1 ? cfg.grad_accum : 1;
+        for (int micro = 0; micro < ga; micro++) {
+            data_get_batch(&dl, tokens, targets, cfg.seq_len);
+            am_set_var_array("tokens", tokens, cfg.seq_len);
+            am_set_var_array("targets", targets, cfg.seq_len);
+
+            // Last micro-batch: also does clip + adamw + clear
+            // Other micro-batches: only forward + backward + accum + clear
+            void* cscript = (micro == ga - 1) ? compiled_step : compiled_fwd;
+            int rc = am_exec_compiled(cscript);
+            if (rc != 0) {
+                fprintf(stderr, "ERROR at step %d micro %d: %s\n", step, micro, am_get_error());
+                goto done;
+            }
+            micro_loss_sum += am_get_var_float("loss");
         }
 
-        float loss = am_get_var_float("loss");
+        float loss = micro_loss_sum / (float)ga;
+        float gnorm = am_get_var_float("grad_norm");
         loss_sum += loss;
         loss_count++;
 
@@ -678,8 +782,8 @@ int main(int argc, char** argv) {
                            (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
             double tps = (double)((step - start_step) * cfg.seq_len) / elapsed;
             float avg = loss_sum / loss_count;
-            trainlog("step %5d | loss %.4f (avg %.4f) | %.0f tok/s | %.1fs | V=%d\n",
-                     step, loss, avg, tps, elapsed, cfg.vocab_size);
+            trainlog("step %5d | loss %.4f (avg %.4f) | lr %.2e | gnorm %.4f | %.0f tok/s | %.1fs | V=%d\n",
+                     step, loss, avg, lr, gnorm, tps, elapsed, cfg.vocab_size);
             loss_sum = 0;
             loss_count = 0;
         }
@@ -704,9 +808,12 @@ int main(int argc, char** argv) {
         }
     }
 
+done:
+    am_free_compiled(compiled_fwd);
+    am_free_compiled(compiled_step);
     save_checkpoint(&cfg, cfg.total_steps, &tok);
 
-    free(tokens); free(targets); free(model_script);
+    free(tokens); free(targets); free(forward_script); free(step_script);
     data_free(&dl);
 
     printf("─────────────────────────────────────────────────\n");
