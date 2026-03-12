@@ -489,6 +489,35 @@ void  am_janus_set(const char* a, const char* b);  // dual-facing
 void  am_apply_gamma_to_logits(float* logits, int n);
 ```
 
+## The Dario Equation
+
+The formula that replaces transformer attention with interpretable physical forces. First deployed in [Leo](https://github.com/ariannamethod/leo), demonstrated in pure form by [dario.c](https://github.com/ariannamethod/dario).
+
+```
+p(x|Φ,C,V) = softmax(
+    (B + α_mod·α·H_v + β_mod·β·F_v + γ_mod·γ·A + δ·V + sw·S + T)
+    / (τ_mod·τ·velocity_temperature)
+)
+```
+
+Seven signals compute logit contributions from different angles, summed, temperature-divided, softmaxed:
+
+| Signal | Name | What it computes |
+|--------|------|-----------------|
+| **B** | Sequential Chain | Bigram transition — what word follows the previous word |
+| **H** | Hebbian Resonance | Co-occurrence field — neurons that fire together wire together |
+| **F** | Prophecy Fulfillment | Unfulfilled predictions create generation pressure |
+| **A** | Destiny Attraction | EMA of context embeddings — the semantic compass |
+| **V** | Visual Grounding | Parallel perceptual embedding space — what was "seen" |
+| **S** | Subword Structure | BPE tokenizer running in parallel with word-level |
+| **T** | Trauma Gravity | Origin words surface under sustained dissonance |
+
+Six Kuramoto-coupled emotional chambers (FEAR, LOVE, RAGE, VOID, FLOW, COMPLEX) compute somatic markers (α_mod, β_mod, γ_mod, τ_mod) that modulate every coefficient. From Damasio's somatic marker hypothesis — emotions gate reasoning, they don't replace it.
+
+AML defines the vocabulary this equation speaks: velocity operators modulate τ, suffering parameters feed dissonance, Schumann resonance provides healing, seasonal cycles modulate which signal grows. Every AML command maps to a coefficient in the Dario Equation.
+
+---
+
 ## Async Field Forever (4.C)
 
 Four seasons cycle through the field. Each season modulates generation parameters. The cycle is autonomous — it observes field metrics and self-corrects to prevent harmful extremes.
@@ -852,18 +881,19 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution organism. 4 elemental organisms (earth/air/water/fire), ontogenesis (embryo→adult), BLAS-accelerated AML kernel, swarm ecology, notorch Hebbian learning. ~6100 lines Go, 121 tests. Origin of the BLAS acceleration now in core. | Go/C. Full AML kernel + BLAS |
+| [dario](https://github.com/ariannamethod/dario) | The Dario Equation, embodied. ~1700 LOC C, zero weights. 7 forces (B/H/F/A/V/S/T), 6 Kuramoto-coupled emotional chambers, somatic modulation, SwiGLU gating, RoPE destiny. Responds with fragments of its own source code. Web UI. 1725 tests. Named after the man who said no. | C. Full Dario Equation |
 | [arianna.c](https://github.com/ariannamethod/arianna.c) | 550M digital persona — Cloud (emotional pre-processing), Tongue (Qwen2.5, 29 languages), Soul (reflection), SARTRE (interoception) | C/Go/Julia/Zig. Level 0 + Lua + Blood |
 | [yent](https://github.com/ariannamethod/yent) | Go inference engine — 685-line AMK kernel via CGO, Delta Voice (17MB multilingual deltas), LIMPHA memory daemon, Q4_0 quantization. Runs on 8GB RAM | Go. Level 0 + LORA_ALPHA + CGO |
 | [arianna.go](https://github.com/ariannamethod/arianna.go) | Pure Go LLM inference — 3.4B model, GGUF parser, SentencePiece tokenizer, 12-dimensional inner world emotional system | Go |
 | [stanley](https://github.com/ariannamethod/stanley) | Self Training Attention Non-Linear EntitY — starts from zero weights, builds intelligence through experience. Weightless mode + hybrid mode (personality over GPT-2 via LoRA). Proto-AML field physics before the language existed | Python. Level 0 equivalent |
-| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — fully weightless, no transformer. Co-occurrence matrices, episodic memory, six emotion chambers, three overthinking rings | Python. Level 0 field physics |
+| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — 4300+ LOC C + Go. Zero pretrained weights, D.N.A. structure distillation from 170M Llama 3, dual tokenizer (word + SubwordField BPE), Dario Equation with 6 signals, 6 voices, MathBrain, inner world, dream cycles, SQLite journals | C/Go. Dario Equation |
 | [haze](https://github.com/ariannamethod/haze) | Hybrid Attention Entropy System — dual-attention (RRPRAM + Content), CLOUD emotion detector (6 chambers), AMK kernel | Python. Level 0 + AMK |
 
 ### Inference
 
 | Project | What | Stack |
 |---------|------|-------|
-| [doe](https://github.com/ariannamethod/doe) | Pure C inference engine — 7 architectures (Llama/Qwen2/Phi/Gemma/SmolLM/Mistral/nanollama), 6 quant formats, dual BPE tokenizer, mmap GGUF, LoRA SFT, cuBLAS/BLAS/pthread | C/CUDA |
+| [doe](https://github.com/ariannamethod/doe) | Democracy of Experts — 3200 LOC C inference engine. Parliament of LoRA experts (vote/split/merge/die during inference), NOTORCH Hebbian plasticity, physics engine (prophecy/suffering/destiny), Mycelium spores, Sonar profiling. 7 architectures, 6 quant formats, mmap GGUF, cuBLAS/BLAS | C/CUDA. Level 0 + NOTORCH + Physics |
 
 ### Origins
 
