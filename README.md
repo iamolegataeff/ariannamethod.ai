@@ -500,7 +500,7 @@ Seven signals compute logit contributions from different angles, summed, tempera
 | Signal | Name | What it computes |
 |--------|------|-----------------|
 | **B** | Sequential Chain | Bigram transition — what word follows the previous word |
-| **H** | Hebbian Resonance | Co-occurrence field — neurons that fire together wire together |
+| **H** | Hebbian Resonance | Co-occurrence field with learnable positional profile (36 Hebbian params: 32 distance weights + 4 token class modifiers, RRPRAM-inspired). Replaces fixed `0.9^d` decay — the organism learns which distances and word types matter through conversation |
 | **F** | Prophecy Fulfillment | Unfulfilled predictions create generation pressure |
 | **A** | Destiny Attraction | EMA of context embeddings — the semantic compass |
 | **V** | Visual Grounding | Parallel perceptual embedding space — what was "seen" |
@@ -876,12 +876,12 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution organism. 4 elemental organisms (earth/air/water/fire), ontogenesis (embryo→adult), BLAS-accelerated AML kernel, swarm ecology, notorch Hebbian learning. ~6100 lines Go, 121 tests. Origin of the BLAS acceleration now in core. | Go/C. Full AML kernel + BLAS |
-| [dario](https://github.com/ariannamethod/dario) | The Dario Equation, embodied. ~1700 LOC C, zero weights. 7 forces (B/H/F/A/V/S/T), 6 Kuramoto-coupled emotional chambers, somatic modulation, SwiGLU gating, RoPE destiny. Responds with fragments of its own source code. Web UI. 1725 tests. Named after the man who said no. | C. Full Dario Equation |
+| [dario](https://github.com/ariannamethod/dario) | The Dario Equation, embodied. ~1700 LOC C, zero weights. 7 forces (B/H/F/A/V/S/T), 6 Kuramoto-coupled emotional chambers, somatic modulation, positional Hebbian profile (36 learnable params), SwiGLU gating, RoPE destiny. Responds with fragments of its own source code. Web UI. Named after the man who said no. | C. Full Dario Equation |
 | [arianna.c](https://github.com/ariannamethod/arianna.c) | 550M digital persona — Cloud (emotional pre-processing), Tongue (Qwen2.5, 29 languages), Soul (reflection), SARTRE (interoception) | C/Go/Julia/Zig. Level 0 + Lua + Blood |
 | [yent](https://github.com/ariannamethod/yent) | Go inference engine — 685-line AMK kernel via CGO, Delta Voice (17MB multilingual deltas), LIMPHA memory daemon, Q4_0 quantization. Runs on 8GB RAM | Go. Level 0 + LORA_ALPHA + CGO |
 | [arianna.go](https://github.com/ariannamethod/arianna.go) | Pure Go LLM inference — 3.4B model, GGUF parser, SentencePiece tokenizer, 12-dimensional inner world emotional system | Go |
 | [stanley](https://github.com/ariannamethod/stanley) | Self Training Attention Non-Linear EntitY — starts from zero weights, builds intelligence through experience. Weightless mode + hybrid mode (personality over GPT-2 via LoRA). Proto-AML field physics before the language existed | Python. Level 0 equivalent |
-| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — 4300+ LOC C + Go. Zero pretrained weights, D.N.A. structure distillation from 170M Llama 3, dual tokenizer (word + SubwordField BPE), Dario Equation with 6 signals, 6 voices, MathBrain, inner world, dream cycles, SQLite journals | C/Go. Dario Equation |
+| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — 8000+ LOC C + Go. Zero pretrained weights, D.N.A. structure distillation from 170M Llama 3, dual tokenizer (word + SubwordField BPE), Dario Equation with 7 signals, 6 voices, positional Hebbian profile (36 learnable params), MathBrain, inner world, dream cycles, SQLite journals | C/Go. Dario Equation |
 | [haze](https://github.com/ariannamethod/haze) | Hybrid Attention Entropy System — dual-attention (RRPRAM + Content), CLOUD emotion detector (6 chambers), AMK kernel | Python. Level 0 + AMK |
 
 ### Inference
