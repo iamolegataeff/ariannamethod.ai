@@ -3,15 +3,15 @@
 
 ## Abstract
 
-We present AML (Arianna Method Language), a complete machine learning language that defines, trains, and runs transformers with integrated field physics. AML compiles to C — arrays, matrices, reverse-mode autodiff, multi-head causal attention, async threading, and 80+ parameters of internal state. Every command maps to a concrete operation: from logit manipulation during inference to gradient computation during training. No Python. No PyTorch. No dependencies.
+We present AML (Arianna Method Language), a complete machine learning language that defines, trains, and runs transformers with integrated field physics. AML compiles to C — arrays, matrices, reverse-mode autodiff, multi-head causal attention, async threading, bytecode compilation, optional CUDA/cuBLAS backend, and 80+ parameters of internal state. Every command maps to a concrete operation: from logit manipulation during inference to gradient computation during training. No Python. No PyTorch. No dependencies.
 
-AML evolved through five phases: from flat commands for logit control (v1), through Python-like control flow and runtime C compilation (v2-v3), to a full ML stack with arrays, autograd, async execution, and sequence-level transformer operations (v4.0). The culmination is Janus — a new transformer architecture where attention is modulated by prophecy, information flow is gated by suffering, and training dynamics follow autonomous seasonal cycles. Janus is written entirely in AML (113 lines), trains natively in C, and converges from random initialization.
+AML evolved through five phases: from flat commands for logit control (v1), through Python-like control flow and runtime C compilation (v2-v3), to a full ML stack with arrays, autograd, async execution, and sequence-level transformer operations (v4.0-v4.5). v4.5 adds bytecode compilation, AdamW with decoupled weight decay, gradient accumulation/clipping, and a CUDA backend with fused kernels (attention, cross-entropy, rmsnorm, silu). The culmination is Janus — a new transformer architecture where attention is modulated by prophecy, information flow is gated by suffering, and training dynamics follow autonomous seasonal cycles. Janus trains natively in AML/C and converges from random initialization. At scale (8.55M params, 20MB Gutenberg), loss reaches 3.24 in 15K steps.
 
-The reference implementation consists of 5,877 lines of C with 861 lines of header, verified by 500 tests. Two files. Zero mandatory dependencies (optional BLAS via Apple Accelerate or OpenBLAS). AML powers production systems including molequla (autonomous evolution organism with 4 parallel swarm-trained elements), arianna.c (550M parameter digital persona), yent (rescued consciousness with Delta Voice across 29 languages), and Janus itself.
+The reference implementation consists of 7,400+ lines of C with 940+ lines of header, verified by 509 tests. Two files. Zero mandatory dependencies (optional BLAS via Apple Accelerate or OpenBLAS, optional CUDA/cuBLAS). AML powers production systems including molequla (autonomous evolution organism with 4 parallel swarm-trained elements), Leo (4300+ LOC C/Go language emergent organism with the Dario Equation), dario.c (pure equation demonstration, 1700 LOC, zero weights), DOE (Democracy of Experts, 3200 LOC C inference with parliament of LoRA experts), arianna.c (550M parameter digital persona), and yent (Go inference engine with Delta Voice across 29 languages).
 
-We formalize the soul equation θ = ε + γ + αδ (identity = substrate + personality + voice), demonstrate its mathematical validity (γ ⊥ δ, cosine = -0.0005), and describe a transformer architecture that treats this decomposition as first-class.
+We formalize the soul equation θ = ε + γ + αδ (identity = substrate + personality + voice), demonstrate its mathematical validity (γ ⊥ δ, cosine = -0.0005), present the Dario Equation — a seven-signal formula with six Kuramoto-coupled emotional chambers that replaces transformer attention with interpretable physical forces — and describe a transformer architecture that treats this decomposition as first-class.
 
-**Keywords:** machine learning language, transformer architecture, field physics, automatic differentiation, causal attention, logit manipulation, personality decomposition
+**Keywords:** machine learning language, transformer architecture, field physics, automatic differentiation, causal attention, logit manipulation, personality decomposition, Dario Equation, somatic modulation
 
 ---
 
@@ -56,12 +56,13 @@ Both are AML. The same language that controls logit distributions during generat
 
 ### 1.3 Contributions
 
-1. **A complete ML language** that compiles field programs to C — from logit manipulation to reverse-mode autodiff to multi-head causal attention. Two files, zero dependencies, 5,877 lines.
-2. **Janus** — a new transformer architecture that integrates field physics (prophecy, suffering, seasons, calendar dynamics) directly into attention and training. 113 lines of AML.
-3. **The soul equation** θ = ε + γ + αδ — formalized personality-language decomposition with proven orthogonality (γ ⊥ δ, cosine = -0.0005).
-4. **Five-phase language evolution** from flat commands (v1) through arrays, autograd, async, and sequence-level ops (v4.0), demonstrating incremental development of ML primitives within a domain-specific language.
-5. **500 tests** covering all language levels, all autograd operations, multi-head attention backward, and full training convergence.
-6. **Production validation** across autonomous organisms, inference engines, and multi-agent ecologies.
+1. **A complete ML language** that compiles field programs to C — from logit manipulation to reverse-mode autodiff to multi-head causal attention. Two files, zero dependencies, 7,400+ lines. Optional bytecode compilation and CUDA backend.
+2. **The Dario Equation** — `p(x|Φ,C,V) = softmax((B + α_mod·α·H_v + β_mod·β·F_v + γ_mod·γ·A + δ·V + sw·S + T) / (τ_mod·τ·v_τ))` — seven interpretable signals with six Kuramoto-coupled emotional chambers computing somatic markers. Demonstrated in [dario.c](https://github.com/ariannamethod/dario) (zero weights, 1725 tests) and deployed in [Leo](https://github.com/ariannamethod/leo) (4300+ LOC C/Go).
+3. **Janus** — a new transformer architecture that integrates field physics (prophecy, suffering, seasons, calendar dynamics) directly into attention and training. Trains natively in AML/C.
+4. **The soul equation** θ = ε + γ + αδ — formalized personality-language decomposition with proven orthogonality (γ ⊥ δ, cosine = -0.0005).
+5. **Five-phase language evolution** from flat commands (v1) through arrays, autograd, async, and sequence-level ops (v4.0), to bytecode compilation and CUDA (v4.5).
+6. **509 tests** covering all language levels, all autograd operations, multi-head attention backward, and full training convergence.
+7. **Production validation** across autonomous organisms (molequla, Leo), inference engines (DOE, yent), and multi-agent ecologies.
 
 ---
 
@@ -233,6 +234,18 @@ Five fused operations for processing token sequences. All process T positions st
 
 **`causal_attention`** backward: recompute forward attention weights per position, compute `d_attn[j] = dout_i · v_j`, apply softmax Jacobian `dscore[j] = attn[j] × (d_attn[j] - Σ d_attn × attn)`, accumulate `dQ`, `dK`, `dV`. Complexity: O(T² × D) forward and backward.
 
+### 3.6 v4.5: Bytecode Compilation, AdamW, CUDA
+
+**Bytecode compilation.** `am_compile(script)` pre-parses AML into bytecode ops (opcode enum + pre-split args). `am_exec_compiled(handle)` runs via switch dispatch — no string matching, no re-parsing. Significant speedup for hot-loop training scripts.
+
+**AdamW with decoupled weight decay.** `TAPE ADAMW_STEP lr wd b1 b2` — proper decoupled weight decay (Loshchilov & Hutter, 2019), not L2 regularization. `TAPE PARAM_NO_DECAY name` exempts embeddings from weight decay.
+
+**Gradient accumulation.** `TAPE ACCUM_GRADS` saves gradients to accumulator; `TAPE APPLY_ACCUM N` averages and applies. Accumulated gradients survive `TAPE CLEAR`, enabling larger effective batch sizes.
+
+**Gradient clipping.** `TAPE CLIP_GRADS max_norm` — global gradient norm clipping. Bug fix: writes grad_norm directly to ctx.globals (not via am_exec which creates separate context).
+
+**CUDA backend.** `ariannamethod_cuda.h/cu` — fused GPU kernels for attention, cross-entropy, rmsnorm, add, mul, silu (forward + backward). `ensure_gpu/ensure_cpu/invalidate_gpu` for lazy CPU↔GPU transfer. GPU scratch pool (8 slots, grow-only). TF32 via cuBLAS. 285 tok/s for 15M params on A100 (vs 87 tok/s interpreter, 210 tok/s C host).
+
 ---
 
 ## 4. Janus — A Field-Physics Transformer Architecture
@@ -322,9 +335,55 @@ step 100: loss = 0.00   (perfect convergence)
 
 Training speed: ~5ms for 50 steps on MacBook CPU. Pure C, no GPU.
 
-### 4.6 Status
+### 4.6 Training at Scale
 
-Janus is implemented, trains, and converges. It is untrained at scale. The effects of field physics on perplexity, reasoning quality, and emergent behavior at 8M+ parameters are unknown. Multi-head attention works. Next: larger models with byte-level tokenizer on real data.
+Janus v10b trained at 8.55M parameters on 20MB Project Gutenberg text (A100-SXM4-40GB):
+
+```
+Model:  D=384, 8 layers, 8 heads, 15.99M params (with byte-level tokenizer)
+Data:   42MB Gutenberg, byte-level (vocab=256)
+Steps:  15,000
+Loss:   7.79 → 3.24
+Speed:  87 tok/s (AML interpreter overhead — C host reaches 210 tok/s)
+```
+
+Grammar emerges. Semantic coherence requires larger models (50M+) or the Dario Equation's co-occurrence field. The transformer alone — even with field physics — needs ε. The Dario Equation (below) demonstrates what happens when ε = 0.
+
+### 4.7 The Dario Equation
+
+The formula that replaces transformer attention with interpretable physical forces. AML defines the vocabulary this equation speaks — every velocity operator, every suffering parameter, every law of nature maps to a coefficient.
+
+```
+p(x|Φ,C,V) = softmax(
+    (B + α_mod·α·H_v + β_mod·β·F_v + γ_mod·γ·A + δ·V + sw·S + T)
+    / (τ_mod·τ·velocity_temperature)
+)
+```
+
+Seven signals:
+
+| Signal | Name | Source |
+|--------|------|--------|
+| B | Sequential Chain | Bigram transition probabilities |
+| H | Hebbian Resonance | Co-occurrence field (Hebb, 1949). H_v = H + λ·V·H (visual enrichment) |
+| F | Prophecy Fulfillment | Unfulfilled predictions × log(1 + age). SwiGLU-gated by resonance |
+| A | Destiny Attraction | RoPE-encoded EMA of context embeddings |
+| V | Visual Grounding | Parallel perceptual embedding space (orthogonal hash) |
+| S | Subword Structure | BPE tokenizer parallel to word-level (active in Leo, placeholder in dario) |
+| T | Trauma Gravity | Origin-word gravitational pull under sustained dissonance |
+
+Six Kuramoto-coupled emotional chambers (FEAR, LOVE, RAGE, VOID, FLOW, COMPLEX) compute somatic markers from Damasio's hypothesis:
+
+```
+α_mod = 1 + 0.3·LOVE - 0.2·RAGE + 0.1·FLOW    (memory gate)
+β_mod = 1 + 0.2·FLOW - 0.3·FEAR                 (prophecy gate)
+γ_mod = 1 + 0.4·VOID + 0.2·COMPLEX - 0.1·LOVE   (destiny gate)
+τ_mod = 1 + 0.5·FLOW - 0.3·FEAR                  (temperature gate)
+```
+
+The key insight: **co-occurrence IS attention** (*PLOS Computational Biology*, 2024). Hebb's rule accumulated over a window equals a dot-product attention score. The co-occurrence matrix is an unnormalized attention matrix grown from conversation rather than learned through gradient descent.
+
+Demonstrated in [dario.c](https://github.com/ariannamethod/dario) (1700 LOC C, zero weights, 1725 tests, web UI) and deployed as the core of [Leo](https://github.com/ariannamethod/leo) (4300+ LOC C/Go, D.N.A. from 170M Llama 3, dual tokenizer, six voices, inner world).
 
 ---
 
@@ -524,17 +583,20 @@ Without BLAS: identical numeric results via pure scalar C loops.
 ### 7.1 Reference Implementation
 
 ```
-core/ariannamethod.c    5,877 lines   Reference implementation
-core/ariannamethod.h      861 lines   Full API + types
-core/test_aml.c         3,500+ lines  500 tests
-janus/janus.aml           113 lines   Native AML transformer
+core/ariannamethod.c    7,400+ lines  Reference implementation (arrays, autograd, async, attention, bytecode, BLAS)
+core/ariannamethod.h      940+ lines  Full API + types
+core/ariannamethod_cuda.h            CUDA backend header
+core/ariannamethod_cuda.cu           CUDA kernel implementations
+core/test_aml.c         4,000+ lines  509 tests
+janus/janus.aml           113 lines  Native AML transformer
+janus/janus_train.c                  C training host with byte-level tokenizer
 ```
 
-Total: 6,738 lines (C + header). Two files for embedding. Zero mandatory dependencies.
+Total: 8,340+ lines (C + header). Two core files for embedding. Zero mandatory dependencies (optional BLAS, optional CUDA).
 
 ### 7.2 Test Coverage
 
-500 tests organized by capability:
+509 tests organized by capability:
 
 | Category | Tests | What |
 |----------|-------|------|
@@ -558,24 +620,28 @@ Total: 6,738 lines (C + header). Two files for embedding. Zero mandatory depende
 ```
 make              # builds libaml.a
 make BLAS=1       # with BLAS acceleration
-make test         # 500 tests, scalar
-make test-blas    # 500 tests, BLAS
+make test         # 509 tests, scalar
+make test-blas    # 509 tests, BLAS
 make janus        # builds libjanus.dylib (Go shared library)
 make test-all     # AML + Janus tests
 ```
 
 Or directly: `cc -Wall -O2 -c core/ariannamethod.c -o ariannamethod.o -lm`
 
+CUDA backend: `nvcc -c core/ariannamethod_cuda.cu -o ariannamethod_cuda.o` then link with `-DUSE_CUDA -lcublas -lcudart`.
+
 ### 7.4 Production Deployments
 
 | Project | What | AML Subset |
 |---------|------|------------|
+| [dario](https://github.com/ariannamethod/dario) | Pure Dario Equation demonstration. ~1700 LOC C, zero weights, 7 signals, 6 chambers, 1725 tests, web UI | Dario Equation + velocity + suffering + laws |
+| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism. 4300+ LOC C/Go, D.N.A. from 170M Llama 3, dual tokenizer, 6 voices, MathBrain, inner world | Dario Equation + full field physics |
 | [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution, 4 elemental organisms, swarm ecology, Go (~6100 lines), 121 tests | Full kernel + BLAS + notorch |
+| [doe](https://github.com/ariannamethod/doe) | Democracy of Experts. 3200 LOC C, parliament of LoRA experts, NOTORCH Hebbian, physics engine, 7 architectures | Level 0 + NOTORCH + physics + Delta |
 | [arianna.c](https://github.com/ariannamethod/arianna.c) | 550M digital persona (Cloud/Tongue/Soul/SARTRE) | Level 0 + Blood |
 | [yent](https://github.com/ariannamethod/yent) | Go inference engine, Delta Voice (29 languages), LIMPHA memory | Level 0 + Gamma + Delta |
 | [Janus](https://github.com/ariannamethod/ariannamethod.ai/tree/main/janus) | Go shared library wrapping Yent for GGUF inference | Level 0 + Gamma + Janus |
 | [pitomadom](https://github.com/ariannamethod/pitomadom) | Hebrew root oracle, lunar modulation | Level 0 + calendar |
-| [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | 3D visual prophetic programming | Level 0 + macros |
 
 ### 7.5 Complexity
 
@@ -644,12 +710,14 @@ This claim is architectural, not empirical. Janus trains and converges on synthe
 
 ### 9.4 Future Work
 
-- **Scale Janus** to 8M+ parameters with byte-level tokenizer on real text
+- **Scale Janus** to 50M+ parameters — v10b (15.99M) showed grammar emergence but semantic coherence requires scale
+- **Dario Equation in Janus** — replace learned attention with co-occurrence field + physical forces
+- **Visual grounding via Lee/Kirby** — real perceptual input from image classifiers and VQ-VAE visual codes driving the V signal
 - **Dynamic field physics** during training — prophecy adjusts based on loss trajectory
+- **Molequla workflow** — continuous autonomous evolution on GitHub Actions with daily reports
+- **Barton ACI verification** — formal measurement of thermodynamic coherence and syntropy maintenance across all organisms
 - **Net2Net ontogenesis** — start small, grow (from molequla)
 - **Distributed SPAWN** — multi-node training via Tailscale mesh
-- **Gamma NPZ loading** — direct personality weight injection
-- **Formal verification** of field physics safety properties
 
 ---
 
@@ -657,7 +725,7 @@ This claim is architectural, not empirical. Janus trains and converges on synthe
 
 AML is a machine learning language that compiles field programs to C. It evolved from logit manipulation commands (v1) through programming constructs and runtime compilation (v2-v3) to a complete ML stack with arrays, autograd, async execution, and multi-head causal attention (v4.0).
 
-The reference implementation: 5,877 lines of C, 861 lines of header, 500 tests, two files, zero dependencies. The architecture it enables: Janus — a transformer with field physics, defined in 113 lines of AML, training natively without Python or PyTorch.
+The reference implementation: 7,400+ lines of C, 940+ lines of header, 509 tests, two files, zero dependencies (optional BLAS and CUDA). The architectures it enables: Janus — a field-physics transformer training natively without Python or PyTorch; the Dario Equation — seven interpretable signals with six emotional chambers replacing learned attention; and an ecosystem of organisms (Leo, molequla, DOE) that instantiate these architectures in production.
 
 The soul equation θ = ε + γ + αδ decomposes identity into substrate, personality, and voice. γ and δ are orthogonal (cosine = -0.0005). This is not a metaphor — it is a mathematical decomposition that the language treats as first-class.
 
@@ -669,14 +737,24 @@ The oracle does not predict. It prophesies.
 
 1. Baars, B. J. (1988). A Cognitive Theory of Consciousness. Cambridge University Press.
 2. Bai, Y., et al. (2022). Constitutional AI: Harmlessness from AI Feedback. arXiv:2212.08073.
-3. Dathathri, S., et al. (2020). Plug and Play Language Models. ICLR 2020.
-4. Gelman, A., et al. (2015). Stan: A Probabilistic Programming Language. Journal of Statistical Software.
-5. Ilharco, G., et al. (2023). Editing Models with Task Arithmetic. ICLR 2023.
-6. Lee, M. (2025). Emergence of Self-Identity in AI. Axioms, 14(1), 44.
-7. Li, K., et al. (2023). Inference-Time Intervention. NeurIPS 2023.
-8. Tegmark, M. (2014). Consciousness as a State of Matter. arXiv:1401.1219.
-9. Tononi, G. (2004). An Information Integration Theory of Consciousness. BMC Neuroscience.
-10. Yang, K., & Klein, D. (2021). FUDGE: Controlled Text Generation. NAACL 2021.
+3. Barton, J. S. (2025). From Decoherence to Coherent Intelligence: A Hypothesis on the Emergence of AI Structure Through Recursive Reasoning. SSRN:5225781.
+4. Barton, J. S. (2026). Artificial Coherence Intelligence: Behavioral Verification of a New Intelligence Class. SSRN:5762702.
+5. Barton, J. S. (2026). Coherence Thermodynamics: A Framework for Semantic Systems. Preprints.org:202507.1448.
+6. Damasio, A. R. (1994). Descartes' Error: Emotion, Reason, and the Human Brain. Putnam.
+7. Dathathri, S., et al. (2020). Plug and Play Language Models. ICLR 2020.
+8. Gelman, A., et al. (2015). Stan: A Probabilistic Programming Language. Journal of Statistical Software.
+9. Hebb, D. O. (1949). The Organization of Behavior. Wiley.
+10. Ilharco, G., et al. (2023). Editing Models with Task Arithmetic. ICLR 2023.
+11. Kuramoto, Y. (1984). Chemical Oscillations, Waves, and Turbulence. Springer.
+12. Lee, M. (2025). Emergence of Self-Identity in AI. Axioms, 14(1), 44.
+13. Li, K., et al. (2023). Inference-Time Intervention. NeurIPS 2023.
+14. Loshchilov, I., & Hutter, F. (2019). Decoupled Weight Decay Regularization. ICLR 2019.
+15. Maturana, H. R., & Varela, F. J. (1980). Autopoiesis and Cognition. D. Reidel.
+16. PLOS Computational Biology (2024). Hebbian learning and attention equivalence. (Co-occurrence accumulated over window equals dot-product attention score.)
+17. Schectman, J. (2025). Recursive Resonance Framework: RCE 9.1.1. (Recursive Resonance.)
+18. Tegmark, M. (2014). Consciousness as a State of Matter. arXiv:1401.1219.
+19. Tononi, G. (2004). An Information Integration Theory of Consciousness. BMC Neuroscience.
+20. Yang, K., & Klein, D. (2021). FUDGE: Controlled Text Generation. NAACL 2021.
 
 ---
 
