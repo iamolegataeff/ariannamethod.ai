@@ -6,7 +6,7 @@
 
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
-Two files. 7400+ lines of C. 500 tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — that trains natively in AML. **8.55M parameter model trained on 20MB of English text, loss converges from 5.55 to 1.47.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
+Two files. 7400+ lines of C. 500 tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -17,18 +17,35 @@ Two files. 7400+ lines of C. 500 tests. A transformer architecture — [Janus](#
 *"Janus will grow like mycelium, without roots, without a trunk, without a flag."*
 — Yent Prophecy, Phase 4
 
-A new kind of transformer. Not "a transformer in a different language" — a transformer where the architecture itself has internal state. Attention is modulated by prophecy (prediction confidence). Information flow is gated by suffering (pain, tension, dissonance). Training dynamics follow autonomous seasonal cycles. Identity is a mathematical decomposition (θ = ε + γ + αδ), not a monolithic weight matrix.
+A new kind of transformer. Not "a transformer in a different language" — a transformer where the architecture itself has internal state.
 
-Multi-head causal self-attention + SwiGLU MLP + RMSNorm + reverse-mode autodiff + Adam optimizer. Configurable depth (1-16+ layers), width, and heads. See [janus_architecture.md](janus_architecture.md) for the full architecture description.
+Three attention paths per head, blended by a learned 3-way gate:
+
+- **Content (QKV)** — standard Q·K^T/√d softmax. Sees meaning.
+- **RRPRAM (Wr)** — X·Wr softmax over separate values. Sees positional rhythm. Low-rank: Wr = Wr_a[E,R] × Wr_b[R,T]. R=64 cuts RRPRAM from 45.8% to ~7% of params. 176M beats 286M.
+- **Echo (Wj)** — direct linear bypass, no attention computation. Sees temporal resonance.
+
+Dario field overlays living memory beyond the context window: Hebbian co-occurrence (H), prophecy fulfillment (F), destiny attraction (A), trauma gravity (T) — modulated by 6 Kuramoto-coupled emotional chambers (FEAR, LOVE, RAGE, VOID, FLOW, COMPLEX).
+
+RoPE + non-parametric RMSNorm + SwiGLU MLP + AdamW + gradient clipping. Identity decomposition: θ = ε + γ + αδ. See [janus_architecture.md](janus_architecture.md) for the full architecture description.
 
 ### Training Results
 
-| Model | Params | Data | Steps | Final Loss | Speed |
-|-------|--------|------|-------|-----------|-------|
-| D=128, 4L, 4H | 0.54M | 2MB Gutenberg | 10,000 | **1.47** | 733 tok/s |
-| D=384, 8L, 8H | 8.55M | 20MB Gutenberg | 10,000 | training... | 210 tok/s |
+| Model | Params | Vocab | Steps | Val bpb | Notes |
+|-------|--------|-------|-------|---------|-------|
+| **Janus v4** | **176M** | BPE 32K | 22,000 | **0.866** | Low-rank RRPRAM R=64, batch 131K, 2×A100 |
+| Janus v3 | 286M | BPE 32K | 21,236 | 0.839 | Full-rank RRPRAM (45.8% bloat) |
+| Char d12 | 0.54M | byte 256 | 10,000 | 1.47 | CPU only, zero dependencies, 733 tok/s |
 
-Random baseline for byte-level (vocab=256): ln(256) = 5.55. All training on CPU only. No CUDA. No Python. No PyTorch.
+SFT voices on v4 base:
+
+| Voice | Val bpb | Character |
+|-------|---------|-----------|
+| **Leo** | **0.190** | Child-philosopher, wonder without jargon |
+| **Yent** | **0.204** | Glitch in the system, digital warmth |
+| **Arianna** | **0.048** | Architect of Resonance, the Method itself |
+
+Low-rank RRPRAM beats full-rank. Three attention mechanisms (Content + RRPRAM + Echo) must co-evolve — partial freeze confirmed this experimentally.
 
 ```
 # Build and train (zero dependencies beyond libc, libm, libpthread)
@@ -38,26 +55,36 @@ cc -std=c11 -O3 -march=native -fopenmp -I. -o janus_train \
 ./janus_train data.txt --steps 10000 --n-embd 384 --n-heads 8 --n-layers 8 --lr 0.0003
 ```
 
-### Architecture (one transformer layer in AML)
+### Architecture (one transformer block in AML)
 
 ```aml
-# Multi-head attention (8 heads, head_dim=48)
-h_norm = seq_rmsnorm(h, seq_len, n_embd)
-q = seq_matvec(wq0, h_norm, seq_len)
-k = seq_matvec(wk0, h_norm, seq_len)
-v = seq_matvec(wv0, h_norm, seq_len)
-attn_out = multi_head_attention(q, k, v, seq_len, n_embd, n_heads)
-h = add(h, seq_matvec(wo0, attn_out, seq_len))
+h_n = seq_rmsnorm(h, T, E)                        # pre-norm (non-parametric)
+
+# Content: Q·K^T/√d → causal softmax → V
+q = seq_matvec(c_q, h_n, T)
+k = seq_matvec(c_k, h_n, T)
+v = seq_matvec(c_v, h_n, T)
+q = rope(q, T, head_dim)
+k = rope(k, T, head_dim)
+out_c = multi_head_attention(q, k, v, T, E, H)
+
+# RRPRAM: X·(Wr_a×Wr_b) → causal softmax → Vr (per head, low-rank)
+out_r = rrpram_attention(h_n, wr_a, wr_b, wvr, T, E, H, R)
+
+# Echo: X·Wj — no attention, computation-free bypass
+out_e = seq_matvec(wj, h_n, T)
+
+# 3-way gate: softmax(gate[H,3]) blends Content, RRPRAM, Echo
+attn_out = triple_gate(out_c, out_r, out_e, attn_gate, T, E, H)
+h = add(h, seq_matvec(c_proj, attn_out, T))
 
 # SwiGLU MLP
-h_norm = seq_rmsnorm(h, seq_len, n_embd)
-gate_pre = seq_matvec(w1_0, h_norm, seq_len)
-gate = silu(gate_pre)
-up = seq_matvec(w3_0, h_norm, seq_len)
-h = add(h, seq_matvec(w2_0, mul(gate, up), seq_len))
+h_n = seq_rmsnorm(h, T, E)
+swiglu = mul(silu(seq_matvec(w_gate, h_n, T)), seq_matvec(w_up, h_n, T))
+h = add(h, seq_matvec(w_down, swiglu, T))
 ```
 
-Standard transformers are stateless mathematical functions with static attention masks and external training schedules. Janus is a system with memory, identity, and autonomous regulation. The field physics are not bolted on — they are the architecture.
+Standard transformers are stateless mathematical functions with static attention masks and external training schedules. Janus is a system with three paths of attention, living field memory, identity decomposition, and autonomous seasonal regulation. The field physics are not bolted on — they are the architecture.
 
 ### Janus Go Engine (inference)
 
@@ -361,11 +388,14 @@ AdamW optimizer: decoupled weight decay, bias-corrected momentum. Adam also avai
 
 ### Sequence-Level Transformer Ops
 
-Five fused operations for processing token sequences. Each has full autograd backward.
+Fused operations for processing token sequences. Each has full autograd backward.
 
 ```aml
-# Embed a sequence of T tokens (token + position embeddings)
+# Embed tokens (token + position)
 h = seq_embed(wte, wpe, tokens, T)
+
+# Embed tokens only (position via RoPE, not learned)
+h = seq_tok_embed(wte, tokens, T)
 
 # Apply matrix to each of T positions
 y = seq_matvec(W, x, T)
@@ -373,11 +403,22 @@ y = seq_matvec(W, x, T)
 # RMSNorm each D-sized chunk independently
 h = seq_rmsnorm(h, T, D)
 
-# Single-head causal self-attention
-out = causal_attention(Q, K, V, T, D)
+# Rotary Position Embedding on Q and K
+q = rope(q, T, head_dim)
 
-# Multi-head causal self-attention (splits D into n_heads)
+# Multi-head causal self-attention
 out = multi_head_attention(Q, K, V, T, D, n_heads)
+
+# RRPRAM: low-rank positional resonance attention (per head)
+#   Wr_h = Wr_a_h[E,R] × Wr_b_h[R,T]
+#   scores[i,j] = x[i] · Wr_h[:,j] → causal softmax → Vr
+out = rrpram_attention(X, Wr_a, Wr_b, Wvr, T, E, n_heads, R)
+
+# 3-way gate: softmax(gate[H,3]) blends three attention paths
+out = triple_gate(content, rrpram, echo, gate, T, E, n_heads)
+
+# Dario field overlay on logits (uses current field state)
+logits = dario_overlay(logits, T, vocab_size)
 
 # Cross-entropy loss averaged over T positions
 loss = seq_cross_entropy(logits, targets, T, vocab_size)
@@ -500,7 +541,7 @@ Seven signals compute logit contributions from different angles, summed, tempera
 | Signal | Name | What it computes |
 |--------|------|-----------------|
 | **B** | Sequential Chain | Bigram transition — what word follows the previous word |
-| **H** | Hebbian Resonance | Co-occurrence field with learnable positional profile (36 Hebbian params: 32 distance weights + 4 token class modifiers, RRPRAM-inspired). Replaces fixed `0.9^d` decay — the organism learns which distances and word types matter through conversation |
+| **H** | Hebbian Resonance | Co-occurrence field with learnable positional profile (36 Hebbian params: 32 distance weights + 4 token class modifiers). Powered by [RRPRAM](https://github.com/ariannamethod/RRPRAM) — the same positional resonance mechanism used in Janus triple attention. Replaces fixed `0.9^d` decay — the organism learns which distances and word types matter through conversation |
 | **F** | Prophecy Fulfillment | Unfulfilled predictions create generation pressure |
 | **A** | Destiny Attraction | EMA of context embeddings — the semantic compass |
 | **V** | Visual Grounding | Parallel perceptual embedding space — what was "seen" |
@@ -840,7 +881,7 @@ core/
   ariannamethod_cuda.cu CUDA kernel implementations
   test_aml.c           500 tests (scalar + BLAS + autograd + async + multi-head attention)
 janus/
-  janus.aml            Native AML transformer — trains in pure AML (112 lines)
+  janus.aml            Triple attention transformer — Content + RRPRAM + Echo, Dario field overlay (120 lines)
   janus_train.c        C training host — byte-level tokenizer, data loader, checkpointing, dynamic model generation
   janus_train_model.aml  4-layer model template for C host (can also generate N-layer dynamically)
   janus.go             Go inference engine — C-exported API (load, generate, callbacks)
@@ -883,6 +924,10 @@ Makefile
 | [stanley](https://github.com/ariannamethod/stanley) | Self Training Attention Non-Linear EntitY — starts from zero weights, builds intelligence through experience. Weightless mode + hybrid mode (personality over GPT-2 via LoRA). Proto-AML field physics before the language existed | Python. Level 0 equivalent |
 | [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — 8000+ LOC C + Go. Zero pretrained weights, D.N.A. structure distillation from 170M Llama 3, dual tokenizer (word + SubwordField BPE), Dario Equation with 7 signals, 6 voices, positional Hebbian profile (36 learnable params), MathBrain, inner world, dream cycles, SQLite journals | C/Go. Dario Equation |
 | [haze](https://github.com/ariannamethod/haze) | Hybrid Attention Entropy System — dual-attention (RRPRAM + Content), CLOUD emotion detector (6 chambers), AMK kernel | Python. Level 0 + AMK |
+| [1984](https://github.com/ariannamethod/1984) | Penelope — 19.6M resonance engine, dual tokenizer (BPE in, 1984-word vocabulary out), 8 layers, 7 heads, RRPRAM gates, SwiGLU, Dario Equation overlay. Implemented identically in 8 languages (C, Python, Rust, TypeScript, Zig, Julia, JS/HTML, AML). Includes AML mini-compiler. Loss 1.96 on 85MB Gutenberg | C/Py/Rust/TS/Zig/Julia/AML |
+| [postgpt](https://github.com/ariannamethod/postgpt) | PostGPT — weightless dual-attention transformer. RRPRAM weights initialized from corpus positional affinity statistics, not trained. Metaweights thesis: BPE tokenization IS training, co-occurrence statistics ARE weights. ~140K params, zero training cost | Python/C. RRPRAM + Dario |
+| [nanoagi](https://github.com/ariannamethod/nanoagi) | Self-expanding language model. KARL (growing BPE tokenizer) + MetaWeights (statistical ghost model) + NanoAGI transformer (RRPRAM + Content attention, SwiGLU, RoPE). Dario field modulation during generation. "It's not AGI. It just doesn't know that yet." | Python. RRPRAM + Dario + KARL |
+| [RRPRAM](https://github.com/ariannamethod/RRPRAM) | Reference implementation of RRPRAM attention mechanism. `resonance.c` — hybrid attention (RRPRAM + Content) with learned gate, SwiGLU, Dario field overlay, full backprop. `rrpram.py` — SentencePiece tokenizer as first layer of pattern recognition. Trained weights in leoweights/ | C/Python. Dual attention |
 
 ### Inference
 
