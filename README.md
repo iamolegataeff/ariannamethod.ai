@@ -6,7 +6,7 @@
 
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
-Two files. 7400+ lines of C. 500 tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
+Two files. 8000+ lines of C. 500+ tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -630,7 +630,11 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n);
 void am_apply_field_to_logits(float* logits, int n);
 ```
 
-## NOTORCH — Hebbian Plasticity
+## NOTORCH — In-Language Hebbian + Full Toolkit
+
+"NOTORCH" is two things: a **single Hebbian plasticity op** living inside the AML runtime (`am_notorch_step`), and the **canonical [notorch](https://github.com/ariannamethod/notorch) library** — a standalone pure-C training toolkit that grew out of the Method and now ships PyTorch-level training separately.
+
+### In-language: `am_notorch_step`
 
 Runtime microlearning. Per-token weight adjustment during inference. No backpropagation, no PyTorch.
 
@@ -649,6 +653,22 @@ void am_notorch_step(float* A, float* B, int out_dim, int in_dim, int rank,
 NOTORCH_LR 0.01       # learning rate
 NOTORCH_DECAY 0.999   # weight decay per step
 ```
+
+### Canonical toolkit: [ariannamethod/notorch](https://github.com/ariannamethod/notorch)
+
+A separate C library — deliberately outside the language — that provides the full neural-network stack for projects across the ecosystem ([molequla](https://github.com/ariannamethod/molequla), [dario.c](https://github.com/ariannamethod/dario), [nanoagi](https://github.com/ariannamethod/nanoagi), [nanodurov](https://github.com/ariannamethod/nanodurov), VLM, and more). PyTorch in pure C — same API shape, no Python runtime, no dependencies beyond libm and (optionally) BLAS.
+
+What lives there, not here:
+
+- **Tensors** with reference counting, reshape, Xavier init, GGUF load/save
+- **Full autograd tape** — 19+ ops, `nt_tape_backward`, grad clipping, accumulation
+- **Optimizers** — Adam, AdamW, [Chuck](https://github.com/ariannamethod/chuck.optimizer) (self-aware Adam)
+- **LR schedules** — cosine, step, linear, with warmup
+- **Transformer ops** — RoPE, RMS/LayerNorm, SiLU/GELU/GeGLU, dropout, MH + GQA + RRPRAM attention
+- **BPE tokenizer**, dataloader, NaN guard, train/eval mode, profiler
+- **Hebbian microlearning** (`nt_hebbian_step`) — the same idea as `am_notorch_step`, reusable outside AML
+
+The split is intentional: AML describes *what a transformer does* as a field-physics organism — the body, the rhythm, the soul formula. `notorch` provides the *mechanism to train and run one* outside that body. Both ship zero-dep, both co-evolve, both are pure C.
 
 ## BLAS Acceleration
 
@@ -875,11 +895,11 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (6500+ lines — arrays, autograd, async, multi-head attention, OpenMP, BLAS, bytecode)
-  ariannamethod.h      Header (940+ lines — AM_State, TAPE, arrays, async, persistent globals, Level 2, Blood)
+  ariannamethod.c      Reference implementation (7100+ lines — arrays, autograd, async, multi-head attention, OpenMP, BLAS, bytecode)
+  ariannamethod.h      Header (960+ lines — AM_State, TAPE, arrays, async, persistent globals, Level 2, Blood)
   ariannamethod_cuda.h CUDA backend — attention, cross-entropy, rmsnorm, silu (forward+backward)
   ariannamethod_cuda.cu CUDA kernel implementations
-  test_aml.c           500 tests (scalar + BLAS + autograd + async + multi-head attention)
+  test_aml.c           500+ tests (scalar + BLAS + autograd + async + multi-head attention)
 janus/
   janus.aml            Triple attention transformer — Content + RRPRAM + Echo, Dario field overlay (120 lines)
   janus_train.c        C training host — byte-level tokenizer, data loader, checkpointing, dynamic model generation

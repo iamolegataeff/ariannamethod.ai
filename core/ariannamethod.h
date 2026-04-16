@@ -605,18 +605,23 @@ typedef struct {
 // Level 2: Per-param grad norm (λ_l)  — per-param modulation + freeze
 // Level 3: Stagnation escape (η)      — noise injection after plateau
 
-#define CHUCK_WINDOW    16
-#define CHUCK_DAMP_LO   0.3f
-#define CHUCK_DAMP_HI   2.0f
-#define CHUCK_DAMP_DOWN  0.95f
-#define CHUCK_DAMP_UP    1.05f
-#define CHUCK_STAG_THRESH 0.001f
-#define CHUCK_STAG_STEPS  8
-#define CHUCK_NOISE_MAG   0.001f
+// Synced with PyTorch chuck.py (iamolegataeff/chuck.optimizer) 2026-04-06
+#define CHUCK_WINDOW       16
+#define CHUCK_DAMP_LO      0.3f
+#define CHUCK_DAMP_HI      2.0f
+#define CHUCK_DAMP_DOWN    0.97f     // was 0.95, PyTorch = 0.97 (less aggressive)
+#define CHUCK_DAMP_UP      1.03f     // was 1.05, PyTorch = 1.03 (less aggressive)
+#define CHUCK_TREND_BRAKE  0.02f     // loss rising > 2% → brake
+#define CHUCK_TREND_PUSH  -0.02f     // loss falling > 2% → push (symmetric)
+#define CHUCK_STAG_THRESH  0.001f
+#define CHUCK_STAG_STEPS   8
+#define CHUCK_NOISE_MAG    0.001f
+#define CHUCK_NOISE_DECAY  0.9f      // exponential noise decay per step
 #define CHUCK_FREEZE_THRESH 0.01f
-#define CHUCK_MACRO_INT   500
-#define CHUCK_MACRO_PAT   3
-#define CHUCK_MACRO_DECAY 0.5f
+#define CHUCK_MACRO_INT    1000      // was 500, PyTorch = 1000
+#define CHUCK_MACRO_PAT    3
+#define CHUCK_MACRO_DECAY  0.5f
+#define CHUCK_MEAN_REVERT  0.999f    // dampen → 1.0 EMA (prevents drift)
 
 typedef struct {
     float grad_hist[CHUCK_WINDOW];  // gradient norm history (ring buffer)

@@ -1993,19 +1993,25 @@ void am_tape_chuck_step(float lr, float loss_val) {
 
         if (old_avg > eps) {
             float trend = (recent_avg - old_avg) / old_avg;
-            if (trend > 0.01f)  cs->dampen *= CHUCK_DAMP_DOWN; // loss rising → dampen
-            if (trend < -0.05f) cs->dampen *= CHUCK_DAMP_UP;   // loss falling → boost
+            // Symmetric thresholds (synced with PyTorch: 0.02 / -0.02)
+            if (trend > CHUCK_TREND_BRAKE) cs->dampen *= CHUCK_DAMP_DOWN; // loss rising → dampen
+            if (trend < CHUCK_TREND_PUSH)  cs->dampen *= CHUCK_DAMP_UP;   // loss falling → boost
 
             // ── Level 3: Stagnation escape ──
             if (fabsf(trend) < CHUCK_STAG_THRESH) {
                 cs->stag++;
-                if (cs->stag >= CHUCK_STAG_STEPS) cs->noise = CHUCK_NOISE_MAG;
+                if (cs->stag >= CHUCK_STAG_STEPS) {
+                    cs->noise = CHUCK_NOISE_MAG;
+                    cs->stag = 0;  // reset counter (PyTorch behavior)
+                }
             } else {
                 cs->stag = 0;
-                cs->noise = 0.0f;
+                cs->noise *= CHUCK_NOISE_DECAY;  // exponential decay (was: reset to 0)
             }
         }
     }
+    // Mean reversion: pull dampen toward 1.0 (prevents drift)
+    cs->dampen = CHUCK_MEAN_REVERT * cs->dampen + (1.0f - CHUCK_MEAN_REVERT) * 1.0f;
     // Clamp global dampen
     if (cs->dampen < CHUCK_DAMP_LO) cs->dampen = CHUCK_DAMP_LO;
     if (cs->dampen > CHUCK_DAMP_HI) cs->dampen = CHUCK_DAMP_HI;
@@ -2028,6 +2034,11 @@ void am_tape_chuck_step(float lr, float loss_val) {
         } else {
             cs->best_macro = cs->macro_ema;
             cs->macro_stag = 0;
+            // LR recovery when improving (PyTorch: lr_scale *= 1.2)
+            if (cs->lr_scale < 1.0f) {
+                cs->lr_scale *= 1.2f;
+                if (cs->lr_scale > 1.0f) cs->lr_scale = 1.0f;
+            }
         }
     }
 
@@ -2075,8 +2086,9 @@ void am_tape_chuck_step(float lr, float loss_val) {
 
             if (old_gn > eps) {
                 float gtrend = (recent_gn - old_gn) / old_gn;
-                if (gtrend > 0.01f)  cp->dampen *= CHUCK_DAMP_DOWN;
-                if (gtrend < -0.05f) cp->dampen *= CHUCK_DAMP_UP;
+                // Per-param: 0.05 thresholds, symmetric (synced with PyTorch)
+                if (gtrend > 0.05f)  cp->dampen *= CHUCK_DAMP_UP;    // grad rising → boost
+                if (gtrend < -0.05f) cp->dampen *= CHUCK_DAMP_DOWN;  // grad settling → ease
             }
 
             // Freeze check: grad norm tiny for CHUCK_STAG_STEPS consecutive
@@ -2087,6 +2099,8 @@ void am_tape_chuck_step(float lr, float loss_val) {
                 cp->stag = 0;
             }
 
+            // Per-param mean reversion (prevents drift)
+            cp->dampen = CHUCK_MEAN_REVERT * cp->dampen + (1.0f - CHUCK_MEAN_REVERT) * 1.0f;
             if (cp->dampen < CHUCK_DAMP_LO) cp->dampen = CHUCK_DAMP_LO;
             if (cp->dampen > CHUCK_DAMP_HI) cp->dampen = CHUCK_DAMP_HI;
         }
