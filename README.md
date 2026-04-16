@@ -446,6 +446,13 @@ q = rope(q, T, head_dim)
 # Multi-head causal self-attention
 out = multi_head_attention(Q, K, V, T, D, n_heads)
 
+# SPA — Sentence Phonon Attention (forward-only, random-init embeddings).
+# "Tokens are atoms, sentences are phonons." Coherence without training.
+# First deployed in ariannamethod/q and ariannamethod/postgpt.
+e = spa_embed(token_ids, W_spa, D, 0.85)       # α-weighted mean, L2-normed sentence vector
+scores = spa_connectedness(E_stacked, S, D)     # bidirectional cross-attention across S sentences
+# scores = spa_connectedness(E_stacked, S, D, bias_by_dist)   # optional distance-indexed bias
+
 # RRPRAM: low-rank positional resonance attention (per head)
 #   Wr_h = Wr_a_h[E,R] × Wr_b_h[R,T]
 #   scores[i,j] = x[i] · Wr_h[:,j] → causal softmax → Vr
