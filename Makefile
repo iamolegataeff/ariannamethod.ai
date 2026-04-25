@@ -21,16 +21,37 @@ ifdef BLAS
   endif
 endif
 
-.PHONY: all test test-janus janus clean test-all test-blas
+.PHONY: all test test-janus janus clean test-all test-blas amlc runner install
 
 # ═══ Core AML ═══
-all: libaml.a
+all: libaml.a runner amlc
 
 libaml.a: core/ariannamethod.o
 	ar rcs $@ $^
 
 core/ariannamethod.o: core/ariannamethod.c core/ariannamethod.h
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# ═══ amlc — AML→C transpiler ═══
+amlc: tools/amlc
+
+tools/amlc: tools/amlc.c
+	$(CC) $(CFLAGS) tools/amlc.c -o $@
+
+# ═══ aml runner — CLI wrapper around libaml ═══
+runner: runner/aml
+
+runner/aml: runner/am.c libaml.a
+	$(CC) $(CFLAGS) -Icore runner/am.c libaml.a -o $@ $(LDFLAGS)
+
+# ═══ Install — system-wide baseline (system/Mac Neo style) ═══
+PREFIX ?= /opt/homebrew
+install: all
+	install -d $(PREFIX)/bin $(PREFIX)/lib $(PREFIX)/include/ariannamethod
+	install -m 0755 runner/aml $(PREFIX)/bin/aml
+	install -m 0755 tools/amlc $(PREFIX)/bin/amlc
+	install -m 0644 libaml.a $(PREFIX)/lib/libaml.a
+	install -m 0644 core/ariannamethod.h $(PREFIX)/include/ariannamethod/ariannamethod.h
 
 # ═══ AML Tests ═══
 test: core/test_aml
