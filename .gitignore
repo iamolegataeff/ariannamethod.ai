@@ -8,6 +8,7 @@ core/test_aml_asan
 core/test_aml_asan.dSYM/
 janus_train
 test_aml
+runner/aml
 janus_ckpt_step*.bin
 
 # LaTeX artifacts
