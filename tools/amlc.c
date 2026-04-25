@@ -7,13 +7,18 @@
  * runtime in libaml and reach hardware via the `aml` runner. amlc only
  * lowers the BLOOD layer to C.
  *
+ * Acceleration baseline (auto-applied when present at $PREFIX/lib):
+ *   - libaml.a       — AML runtime (LOAD_MODEL, GENERATE, PROPHECY, …)
+ *   - libnotorch.a   — BLAS-accelerated tensor ops (matvec, matmul, GGUF)
+ *   - Apple Accelerate framework on Darwin (or OpenBLAS on Linux)
+ *
  * Recognised directives:
  *   BLOOD COMPILE <name> { ...C... }   — named C source block
  *   BLOOD MAIN { ...C... }             — same shape, marks entry-point block
  *   BLOOD LINK <flag>                  — extra cc linker arg (e.g. -lpthread)
  *   ECHO "<path>"                      — inject `#include "<path>"`
  *
- * Usage: amlc <file.aml> [-o name] [--emit-c] [--run -- args...]
+ * Usage: amlc <file.aml> [-o name] [--emit-c] [--no-accel] [--run -- args...]
  *
  * Part of the AriannaMethod project.
  */
@@ -23,6 +28,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define MAX_BLOCKS    256
 #define MAX_LINKS     64
@@ -418,10 +424,29 @@ static void usage(const char *argv0) {
         argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
+static int file_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Build the accel/runtime preamble passed to cc:
+ *   - libaml.a / libnotorch.a from $PREFIX/lib (auto when present)
+ *   - $PREFIX/include on the include path
+ *   - Apple Accelerate / OpenBLAS for BLAS matvec/matmul
+ * Returns the number of bytes written. Caller passes a buffer that already
+ * holds the cc command up to the input .c path. We append: include paths,
+ * BLAS defines, then later (after -o output) the libraries and frameworks. */
+static const char *prefix_dir(void) {
+    const char *p = getenv("AML_PREFIX");
+    if (p && *p) return p;
+    return "/opt/homebrew";
+}
+
 int main(int argc, char **argv) {
     const char *infile  = NULL;
     const char *outfile = NULL;
     int emit_only = 0, run_after = 0;
+    int no_accel  = 0;
     int prog_argc = 0;
     char **prog_argv = NULL;
 
@@ -446,6 +471,8 @@ int main(int argc, char **argv) {
             emit_only = 1;
         } else if (strcmp(argv[i], "--run") == 0) {
             run_after = 1;
+        } else if (strcmp(argv[i], "--no-accel") == 0) {
+            no_accel = 1;
         } else if (argv[i][0] == '-') {
             fprintf(stderr, "amlc: unknown option: %s\n", argv[i]);
             return 1;
@@ -500,12 +527,67 @@ int main(int argc, char **argv) {
     fprintf(stderr, "amlc: generated %d lines of C (%ld bytes)\n", lines, fsz);
 
     char cmd[8192];
+    const char *PFX = prefix_dir();
+    char libaml[1024], libnotorch[1024], inc_dir[1024];
+    snprintf(libaml,     sizeof(libaml),     "%s/lib/libaml.a",     PFX);
+    snprintf(libnotorch, sizeof(libnotorch), "%s/lib/libnotorch.a", PFX);
+    snprintf(inc_dir,    sizeof(inc_dir),    "%s/include",          PFX);
+
+    int have_aml     = !no_accel && file_exists(libaml);
+    int have_notorch = !no_accel && file_exists(libnotorch);
+
     int n = snprintf(cmd, sizeof(cmd),
                      "cc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable "
-                     "-Wno-unused-function %s -o %s -lm",
-                     cpath, outfile);
+                     "-Wno-unused-function -Wno-comment -I%s",
+                     inc_dir);
+
+#if defined(__APPLE__)
+    if (!no_accel) {
+        n += snprintf(cmd + n, sizeof(cmd) - n,
+                      " -DUSE_BLAS -DACCELERATE -DACCELERATE_NEW_LAPACK");
+    }
+#elif defined(__linux__)
+    if (!no_accel) {
+        n += snprintf(cmd + n, sizeof(cmd) - n, " -DUSE_BLAS");
+    }
+#endif
+
+    n += snprintf(cmd + n, sizeof(cmd) - n, " %s -o %s", cpath, outfile);
+
+    if (have_notorch)
+        n += snprintf(cmd + n, sizeof(cmd) - n, " %s", libnotorch);
+    if (have_aml)
+        n += snprintf(cmd + n, sizeof(cmd) - n, " %s", libaml);
+
+    n += snprintf(cmd + n, sizeof(cmd) - n, " -lm -lpthread");
+
+#if defined(__APPLE__)
+    if (!no_accel)
+        n += snprintf(cmd + n, sizeof(cmd) - n, " -framework Accelerate");
+#elif defined(__linux__)
+    if (!no_accel)
+        n += snprintf(cmd + n, sizeof(cmd) - n, " -lopenblas");
+#endif
+
     for (int li = 0; li < p.n_links; li++)
         n += snprintf(cmd + n, sizeof(cmd) - n, " %s", p.links[li]);
+
+    if (no_accel) {
+        fprintf(stderr, "amlc: building with --no-accel (pure scalar C)\n");
+    } else {
+        fprintf(stderr, "amlc: linking%s%s%s\n",
+                have_notorch ? " libnotorch" : "",
+                have_aml     ? " libaml"     : "",
+#if defined(__APPLE__)
+                " Accelerate"
+#elif defined(__linux__)
+                " openblas"
+#else
+                ""
+#endif
+        );
+    }
+
     int rc = system(cmd);
     if (rc != 0) {
         fprintf(stderr, "amlc: cc failed (rc=%d)\n", rc);
