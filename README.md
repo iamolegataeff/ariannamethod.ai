@@ -999,6 +999,12 @@ Makefile
 |---------|------|-------|
 | [doe](https://github.com/ariannamethod/doe) | Democracy of Experts — 3200 LOC C inference engine. Parliament of LoRA experts (vote/split/merge/die during inference), NOTORCH Hebbian plasticity, physics engine (prophecy/suffering/destiny), Mycelium spores, Sonar profiling. 7 architectures, 6 quant formats, mmap GGUF, cuBLAS/BLAS | C/CUDA. Level 0 + NOTORCH + Physics |
 
+### Environments
+
+| Project | What | Stack |
+|---------|------|-------|
+| [metaharmonix](https://github.com/ariannamethod/metaharmonix) | Arianna Method terminal — sibling-not-fork to Termux. AML compiler/runtime is **baked in** (`bake/aml/`), not linked, so the terminal ships the language by default. Companion slots for `bake/notorch/` and a vendored `dario.c` heart. Initial scaffold: minimal REPL host, builtins (`mhx aml`, `mhx notorch`, `mhx heart`, `mhx install <lang>`), unit + smoke test suite | C. Hosts AML at runtime |
+
 ### Origins
 
 | Project | What | Stack |
