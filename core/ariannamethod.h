@@ -426,6 +426,32 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n);
 void am_apply_field_to_logits(float* logits, int n);
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FIELD STATE PERSISTENCE — save/load AM_State G across sessions
+//
+// Inferences (yent.aml, resonance.aml, jannus-r) carry no memory between runs
+// without this — every am_init resets chambers, scars, prophecy debt, calendar
+// snapshots, etc. am_field_save dumps the whole AM_State to a binary file
+// (magic "AMSO" + version + sizeof + timestamp + raw struct); am_field_load
+// reads it back, refusing if version or sizeof differ (recompiled libaml).
+//
+// Bound to top-level AML directives:
+//     LOAD "path.soma"   → am_field_load(path)
+//     SAVE "path.soma"   → am_field_save(path)
+//
+// File format (little-endian):
+//     [0..3]   magic        "AMSO"           (0x4F534D41)
+//     [4..7]   version      uint32           (currently 1)
+//     [8..11]  state_size   uint32           (sizeof(AM_State))
+//     [12..19] timestamp    uint64           (UTC seconds)
+//     [20..]   raw AM_State bytes
+//
+// Returns 0 on success, negative on failure (with stderr message).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int am_field_save(const char* path);
+int am_field_load(const char* path);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // NOTORCH — Hebbian plasticity without PyTorch
 // ═══════════════════════════════════════════════════════════════════════════════
 

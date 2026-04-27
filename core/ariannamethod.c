@@ -846,6 +846,84 @@ void am_reset_debt(void) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FIELD STATE PERSISTENCE — am_field_save / am_field_load
+//
+// AM_State is POD with only inline arrays (scar_texts, gamma slots, etc.).
+// We dump it as a single block: magic + version + sizeof + timestamp + struct.
+// On load, refuse if magic / version / sizeof differ — that catches any case
+// where libaml has been recompiled with a different layout, so old soma files
+// don't silently corrupt the running field. Top-level AML directives LOAD/SAVE
+// dispatch here from aml_exec_level0.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#define AM_SOMA_MAGIC   0x4F534D41u  /* 'A','M','S','O' little-endian */
+#define AM_SOMA_VERSION 1u
+
+int am_field_save(const char* path) {
+  if (!path || !path[0]) return -1;
+  FILE* f = fopen(path, "wb");
+  if (!f) {
+    fprintf(stderr, "[am_field_save] cannot open '%s' for write\n", path);
+    return -1;
+  }
+  uint32_t magic     = AM_SOMA_MAGIC;
+  uint32_t version   = AM_SOMA_VERSION;
+  uint32_t state_sz  = (uint32_t)sizeof(AM_State);
+  uint64_t timestamp = (uint64_t)time(NULL);
+  if (fwrite(&magic,    4, 1, f) != 1 ||
+      fwrite(&version,  4, 1, f) != 1 ||
+      fwrite(&state_sz, 4, 1, f) != 1 ||
+      fwrite(&timestamp,8, 1, f) != 1 ||
+      fwrite(&G, sizeof(AM_State), 1, f) != 1) {
+    fprintf(stderr, "[am_field_save] short write to '%s'\n", path);
+    fclose(f);
+    return -2;
+  }
+  fclose(f);
+  return 0;
+}
+
+int am_field_load(const char* path) {
+  if (!path || !path[0]) return -1;
+  FILE* f = fopen(path, "rb");
+  if (!f) {
+    /* Missing file isn't an error on first run — quietly start fresh. */
+    return -1;
+  }
+  uint32_t magic = 0, version = 0, state_sz = 0;
+  uint64_t timestamp = 0;
+  if (fread(&magic, 4, 1, f) != 1 || magic != AM_SOMA_MAGIC) {
+    fprintf(stderr, "[am_field_load] '%s': bad magic 0x%08x (expected 0x%08x)\n",
+            path, magic, AM_SOMA_MAGIC);
+    fclose(f);
+    return -2;
+  }
+  if (fread(&version, 4, 1, f) != 1 || version != AM_SOMA_VERSION) {
+    fprintf(stderr, "[am_field_load] '%s': version %u (expected %u) — refusing\n",
+            path, version, AM_SOMA_VERSION);
+    fclose(f);
+    return -3;
+  }
+  if (fread(&state_sz, 4, 1, f) != 1 || state_sz != (uint32_t)sizeof(AM_State)) {
+    fprintf(stderr,
+            "[am_field_load] '%s': sizeof(AM_State)=%u, file has %u — libaml ABI changed\n",
+            path, (unsigned)sizeof(AM_State), state_sz);
+    fclose(f);
+    return -4;
+  }
+  if (fread(&timestamp, 8, 1, f) != 1) {
+    fclose(f); return -5;
+  }
+  if (fread(&G, sizeof(AM_State), 1, f) != 1) {
+    fprintf(stderr, "[am_field_load] '%s': short read of state\n", path);
+    fclose(f);
+    return -5;
+  }
+  fclose(f);
+  return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // LEVEL 2 INFRASTRUCTURE — error, field map, symbol table
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3384,6 +3462,28 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
     }
     else if (!strcmp(t, "RESET_DEBT")) {
       am_reset_debt();
+    }
+
+    // FIELD STATE PERSISTENCE — AMSO file (chambers, scars, debt, calendar, ...)
+    //   LOAD "path.soma"   — read AM_State from disk (silent if file missing)
+    //   SAVE "path.soma"   — dump AM_State to disk
+    // Inferences (yent.aml, resonance.aml, jannus-r) call these to carry the
+    // breath of the field across sessions.
+    else if (!strcmp(t, "LOAD") || !strcmp(t, "SAVE")) {
+      char path[512] = {0};
+      const char* p = arg;
+      while (*p == ' ' || *p == '\t') p++;
+      if (*p == '"') {
+        p++;
+        int k = 0;
+        while (*p && *p != '"' && k < (int)sizeof(path) - 1) path[k++] = *p++;
+      } else {
+        sscanf(arg, "%511s", path);
+      }
+      if (path[0]) {
+        if (!strcmp(t, "LOAD")) am_field_load(path);
+        else                    am_field_save(path);
+      }
     }
 
     // LAWS OF NATURE
