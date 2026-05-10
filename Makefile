@@ -44,6 +44,26 @@ runner: runner/aml
 runner/aml: runner/am.c libaml.a
 	$(CC) $(CFLAGS) -Icore runner/am.c libaml.a -o $@ $(LDFLAGS)
 
+# ═══ CUDA backend (optional, requires nvcc + cuBLAS) ═══
+# Build:   make cuda
+# Install: make install-cuda PREFIX=/usr/local
+#
+# Produces system-wide libariannamethod_cuda.a + cuda.h header consumed
+# by notorch (USE_AM_CUDA=1), metaharmonix, and any other organism that
+# wants GPU primitives (GEMM, RMSNorm, SiLU, backward kernels) without
+# duplicating its own CUDA backend.
+.PHONY: cuda install-cuda
+
+NVCC ?= nvcc
+CUDA_PATH ?= /usr/local/cuda
+
+cuda: libariannamethod_cuda.a
+
+libariannamethod_cuda.a: core/ariannamethod_cuda.cu core/ariannamethod_cuda.h
+	$(NVCC) -O2 -DUSE_CUDA -c core/ariannamethod_cuda.cu -o core/ariannamethod_cuda.o
+	ar rcs $@ core/ariannamethod_cuda.o
+	@echo "Built: libariannamethod_cuda.a (CUDA backend)"
+
 # ═══ Install — system-wide baseline (system/Mac Neo style) ═══
 PREFIX ?= /opt/homebrew
 install: all
@@ -52,6 +72,13 @@ install: all
 	install -m 0755 tools/amlc $(PREFIX)/bin/amlc
 	install -m 0644 libaml.a $(PREFIX)/lib/libaml.a
 	install -m 0644 core/ariannamethod.h $(PREFIX)/include/ariannamethod/ariannamethod.h
+
+# Install CUDA library (optional — run `make cuda` first, then `make install-cuda`)
+install-cuda: libariannamethod_cuda.a
+	install -d $(PREFIX)/lib $(PREFIX)/include/ariannamethod
+	install -m 0644 libariannamethod_cuda.a $(PREFIX)/lib/libariannamethod_cuda.a
+	install -m 0644 core/ariannamethod_cuda.h $(PREFIX)/include/ariannamethod/cuda.h
+	@echo "Installed: $(PREFIX)/lib/libariannamethod_cuda.a + $(PREFIX)/include/ariannamethod/cuda.h"
 
 # ═══ AML Tests ═══
 test: core/test_aml
