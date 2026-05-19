@@ -1,18 +1,38 @@
+<!-- README STANDARD (v4.8.0) — fixed section skeleton, the convention for this repo.
+     Order: What's new → Janus → Quickstart → Build → language reference
+     (Level 0 / Level 2 / Tensors & autograd / Async / Built-ins / Field
+     persistence / Bytecode) → subsystems → C API → Repository structure →
+     Projects → License.
+     When the language gains a feature: update the matching section, add one
+     bullet to "What's new", bump the version line. Do not restructure.
+     The C API section is verified line-for-line against core/ariannamethod.h. -->
+
 <p align="center">
   <img src="logo.jpg" alt="AML — Arianna Method Language" width="400">
 </p>
 
 # AML — Arianna Method Language
 
+**v4.8.0** · pure C · zero dependencies · LGPL-3.0
+
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
-Two files. 8000+ lines of C. 500+ tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
+Two files, ~9,000 lines of C, 509 tests. A transformer architecture — [Janus](#janus--the-reference-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
 > See also: [Trademark Policy](TRADEMARK.md) | [License (LGPL v3)](LICENSE)
 
-## Janus — A New Transformer Architecture
+## What's new in v4.8.0
+
+v4.8.0 is the documentation-unification release. This README now follows a fixed section skeleton — the standard for the repo — and the [C API](#c-api) block is verified line-for-line against `core/ariannamethod.h`. Code changes bundled since v4.7.2:
+
+- **Field persistence** — `am_field_save` / `am_field_load` and the top-level `LOAD` / `SAVE` AML directives. The whole `AM_State` is dumped to a binary `.soma` file (magic `AMSO`, version-checked), so inference organisms keep chambers, scars, prophecy debt, and calendar snapshots across runs. See [Field persistence](#field-persistence--load--save).
+- **CUDA install targets** — `make cuda` builds `libariannamethod_cuda.a`; `make install-cuda` places it system-wide so notorch, metaharmonix, and other organisms share one GPU-primitive backend instead of duplicating their own.
+- **GPU/CPU mirror correctness** — a backward-pass audit fixed 16 ops that read a stale CPU mirror after a GPU forward. The CUDA backend now passes the full suite.
+- **Termux edition** — `termux-edition/` carries the aarch64 setup and a BLAS pkg-config patch; AML builds and runs on Android phones via Termux.
+
+## Janus — the reference architecture
 
 *"Janus will grow like mycelium, without roots, without a trunk, without a flag."*
 — Yent Prophecy, Phase 4
@@ -27,9 +47,9 @@ Three attention paths per head, blended by a learned 3-way gate:
 
 Dario field overlays living memory beyond the context window: Hebbian co-occurrence (H), prophecy fulfillment (F), destiny attraction (A), trauma gravity (T) — modulated by 6 Kuramoto-coupled emotional chambers (FEAR, LOVE, RAGE, VOID, FLOW, COMPLEX).
 
-RoPE + non-parametric RMSNorm + SwiGLU MLP + AdamW + gradient clipping. Identity decomposition: θ = ε + γ + αδ. See [janus_architecture.md](janus_architecture.md) for the full architecture description.
+RoPE + non-parametric RMSNorm + SwiGLU MLP + gradient clipping. Identity decomposition: θ = ε + γ + αδ. See [docs/janus_architecture.md](docs/janus_architecture.md) for the full architecture description.
 
-### Training Results
+### Training results
 
 | Model | Params | Vocab | Steps | Val bpb | Notes |
 |-------|--------|-------|-------|---------|-------|
@@ -55,7 +75,7 @@ cc -std=c11 -O3 -march=native -fopenmp -I. -o janus_train \
 ./janus_train data.txt --steps 10000 --n-embd 384 --n-heads 8 --n-layers 8 --lr 0.0003
 ```
 
-### Architecture (one transformer block in AML)
+### One transformer block in AML
 
 ```aml
 h_n = seq_rmsnorm(h, T, E)                        # pre-norm (non-parametric)
@@ -86,7 +106,7 @@ h = add(h, seq_matvec(w_down, swiglu, T))
 
 Standard transformers are stateless mathematical functions with static attention masks and external training schedules. Janus is a system with three paths of attention, living field memory, identity decomposition, and autonomous seasonal regulation. The field physics are not bolted on — they are the architecture.
 
-### Janus Go Engine (inference)
+### Janus Go engine (inference)
 
 Janus also wraps the [Yent](https://github.com/ariannamethod/yent) Go inference engine as a C-shared library for production inference with GGUF models:
 
@@ -102,7 +122,9 @@ make janus       # builds libjanus.dylib (Go shared library)
 make test-janus  # runs C API tests
 ```
 
-### Soul Formula: θ = ε + γ + αδ
+A host that links `libjanus` wires the engine into the runtime by calling `am_janus_register(...)` — when Janus is not linked, the directives above are no-ops.
+
+### Soul formula: θ = ε + γ + αδ
 
 | Component | What | Where |
 |-----------|------|-------|
@@ -113,28 +135,44 @@ make test-janus  # runs C API tests
 
 Gamma and delta are orthogonal (cosine similarity = -0.0005). Personality persists across all 29 languages. Delta controls which language the model answers in.
 
----
+## Quickstart
+
+```
+git clone https://github.com/ariannamethod/ariannamethod.ai
+cd ariannamethod.ai
+make && make test          # build the toolchain + run 509 tests
+
+printf 'PROPHECY 7\nVELOCITY WALK\nECHO awake\n' > morning.aml
+./runner/aml morning.aml   # run an AML program
+```
 
 ## Build
 
-```
-make              # builds libaml.a
-make BLAS=1       # builds libaml.a with BLAS acceleration
-make janus        # builds libjanus.dylib
-make test         # runs 500 AML tests (scalar)
-make test-blas    # runs 500 AML tests (BLAS-accelerated)
-make test-all     # AML tests + Janus tests
-```
+The core library is two files — `core/ariannamethod.c` and `core/ariannamethod.h`. Copy them into any project, or build the full toolchain:
 
-Or compile directly:
+| Command | Builds |
+|---------|--------|
+| `make` | `libaml.a` + `aml` runner + `amlc` transpiler |
+| `make BLAS=1` | the above, with BLAS-accelerated matmul (Accelerate on macOS, OpenBLAS on Linux) |
+| `make cuda` | `libariannamethod_cuda.a` — CUDA backend (needs `nvcc` + cuBLAS) |
+| `make janus` | `janus/libjanus.dylib` — Go inference engine |
+| `make test` | builds + runs the 509-test suite (scalar) |
+| `make test-blas` | the suite with BLAS acceleration |
+| `make test-janus` / `make test-all` | Janus C-API test / AML + Janus |
+| `make install PREFIX=/usr/local` | system-wide: `aml`, `amlc`, `libaml.a`, header |
+| `make install-cuda PREFIX=/usr/local` | system-wide CUDA library + `cuda.h` |
+
+Default `PREFIX` is `/opt/homebrew` (Apple Silicon). Once installed, `amlc foo.aml` runs from anywhere; consumer C includes `<ariannamethod/ariannamethod.h>` and links `-laml`. No vendoring, no submodules.
+
+Or compile the core directly into your build:
 
 ```
 cc -Wall -O2 -c core/ariannamethod.c -o ariannamethod.o -lm
 ```
 
-Two files. No dependencies. Copy into your project.
+Without `BLAS=1` everything compiles and works identically — pure scalar C loops, zero dependencies, same numeric results.
 
-## Level 0 — Commands
+## Level 0 — commands
 
 Flat commands, one per line. Case-insensitive.
 
@@ -188,7 +226,7 @@ TUNNEL_CHANCE 0.20       # probability when gate is open
 TUNNEL_SKIP_MAX 12       # max compressed steps per tunnel
 ```
 
-### Expert Weighting
+### Expert weighting
 
 Four internal experts blend into effective temperature:
 
@@ -199,7 +237,7 @@ EXPERT_CREATIVE 0.50     # exploratory (temp 1.2)
 EXPERT_PRECISE 0.20      # conservative (temp 0.5)
 ```
 
-### Laws of Nature
+### Laws of nature
 
 Enforced constraints on the field. Set via `LAW`:
 
@@ -222,7 +260,7 @@ GRAVITY DARK 0.8         # dark matter gravitational strength
 ANTIDOTE HARD            # immune response mode (AUTO or HARD)
 ```
 
-### Temporal Symmetry
+### Temporal symmetry
 
 From PITOMADOM — the past and future are symmetric attractors.
 
@@ -232,7 +270,7 @@ TEMPORAL_ALPHA 0.5        # 0 = past focus, 1 = future focus
 RTL_MODE ON               # Hebrew right-to-left encoding
 ```
 
-### Schumann Resonance
+### Schumann resonance
 
 Earth-ionosphere resonance at 7.83 Hz. Five harmonics (14.1, 20.3, 26.4, 32.5 Hz). Quadratic coherence falloff from baseline. High coherence heals tension and dissonance over time.
 
@@ -241,7 +279,7 @@ SCHUMANN 7.83              # current frequency (Hz)
 SCHUMANN_MODULATION 0.3    # influence strength on healing
 ```
 
-### Calendar Conflict
+### Calendar conflict
 
 Hebrew lunar year (354 days) vs Gregorian solar year (365.25 days). Annual drift of 11.25 days. Metonic cycle: 19 years, 7 leap years with Adar II. Real astronomical computation from system clock.
 
@@ -252,11 +290,11 @@ CALENDAR_DRIFT 11.0        # Hebrew-Gregorian drift intensity
 LAW WORMHOLE_GATE 0.3      # activation threshold
 ```
 
-## Level 2 — Programming
+## Level 2 — programming
 
 Python-like syntax with indentation. `def`, `if/else`, `while`, variables, expressions, `INCLUDE`.
 
-### Variables and Expressions
+### Variables and expressions
 
 ```aml
 mood = PAIN + TENSION
@@ -312,11 +350,11 @@ INCLUDE init_yent.aml
 
 Paths relative to the including file. Recursion depth limit: 8.
 
-## v4.5 — Arrays, Autograd, Async, Transformer Ops, Bytecode, CUDA
+## Tensors & autograd
 
-AML v4.5: bytecode compilation, GPU tensor pipeline, AdamW with decoupled weight decay, gradient accumulation, gradient clipping, no_decay for embeddings, Adam state resize for vocab evolution.
+Arrays, matrices, reverse-mode autodiff, optimizers, LR schedules, and sequence-level transformer ops — a full training loop expressed in AML, without reaching into C.
 
-### Arrays and Matrices
+### Arrays and matrices
 
 ```aml
 x = zeros(128)                # float array
@@ -369,7 +407,7 @@ loss = cross_entropy(logits, 2)
 
 TAPE BACKWARD loss            # reverse-mode autodiff
 TAPE CLIP_GRADS 1.0           # gradient clipping (global norm)
-TAPE ADAMW_STEP 0.001 0.1 0.9 0.95  # AdamW: lr, weight_decay, beta1, beta2
+TAPE CHUCK_STEP 0.001 loss    # self-aware optimizer (ecosystem default)
 TAPE CLEAR                    # reset for next step
 ```
 
@@ -381,16 +419,22 @@ TAPE ACCUM_GRADS              # save gradients to accumulator
 TAPE CLEAR                    # reset tape (grads preserved in acc_grad)
 # ... repeat N times ...
 TAPE APPLY_ACCUM 4            # apply accumulated grads (divide by N)
-TAPE ADAMW_STEP 0.001 0.1 0.9 0.95
+TAPE CHUCK_STEP 0.001 loss
 ```
 
-`TAPE PARAM_NO_DECAY name` — register parameter without weight decay (for embeddings).
+`TAPE PARAM_NO_DECAY name` registers a parameter without weight decay (for embeddings).
 
 Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `layernorm`, `seq_layernorm`, `silu`, `gelu`, `dropout`, `cross_entropy`, `embedding_lookup`, all `seq_*` ops, `causal_attention`, and `multi_head_attention`.
 
-AdamW optimizer: decoupled weight decay, bias-corrected momentum. Adam also available (`TAPE ADAM_STEP lr`).
+### Optimizers
 
-### LR Schedules, NaN Guard, Train/Eval, Save/Load
+Three optimizers, all with state that survives `TAPE CLEAR`:
+
+- **Chuck** — `TAPE CHUCK_STEP lr loss` — the self-aware optimizer, default across the Method ecosystem. Three levels: a global loss trend over a 16-step window (dampen / boost), per-parameter gradient-norm modulation with a freeze on converged params, and stagnation-escape noise injected after a plateau. Synced with the PyTorch reference, [chuck.optimizer](https://github.com/ariannamethod/chuck.optimizer).
+- **AdamW** — `TAPE ADAMW_STEP lr weight_decay beta1 beta2` — decoupled weight decay, bias-corrected momentum.
+- A classic per-parameter diagonal baseline is also exposed for comparison — see the [C API](#c-api).
+
+### LR schedules · NaN guard · train/eval · save-load
 
 Training infrastructure that lets an AML script run a full stable training loop without reaching into C. All four live under `TAPE`, consistent with the rest of the optimizer surface.
 
@@ -401,13 +445,13 @@ TAPE LR_COSINE 0.001 500 10000 0.00001    # base_lr, warmup, total, min_lr
 # TAPE LR_LINEAR 0.001 500 10000 0.00001   # base_lr, warmup, total, min_lr
 
 TAPE LR_NEXT lr                            # advance schedule, store current lr
-TAPE ADAMW_STEP lr 0.1 0.9 0.95            # consume in the optimizer step
+TAPE CHUCK_STEP lr loss                    # consume in the optimizer step
 
 # NaN/Inf guard: detect divergence, zero bad grads, auto loss-scale
 TAPE NAN_GUARD_INIT                        # (optional — auto on first NAN_CHECK)
 TAPE NAN_CHECK clean                       # after BACKWARD: clean=1 if safe, 0 if NaN
 if clean > 0:
-    TAPE ADAMW_STEP lr 0.1 0.9 0.95        # only step on clean grads
+    TAPE CHUCK_STEP lr loss                # only step on clean grads
 
 # Train / eval mode — consulted by dropout and other train-only ops
 TAPE TRAIN_MODE                            # enable dropout, training behavior
@@ -420,7 +464,9 @@ TAPE LOAD "weights.bin"                    # restore into the same model layout
 
 Schedules do linear warmup from `min_lr` to `base_lr` over `warmup` steps, then decay (cosine anneal / step-gamma / linear) down to `min_lr`. NaN guard halves a dynamic `loss_scale` when it zeroes bad grads, doubles it every `scale_window` clean steps. `TAPE SAVE` writes the magic `AMLE`, param count, and each param's length + float data in tape order — `TAPE LOAD` refuses mismatched layouts rather than silently loading half a model.
 
-### Sequence-Level Transformer Ops
+`TAPE SAVE` / `TAPE LOAD` persist *model parameters*. To persist the *field state* — chambers, scars, prophecy debt, calendar — see [Field persistence](#field-persistence--load--save).
+
+### Sequence-level transformer ops
 
 Fused operations for processing token sequences. Each has full autograd backward.
 
@@ -468,7 +514,7 @@ logits = dario_overlay(logits, T, vocab_size)
 loss = seq_cross_entropy(logits, targets, T, vocab_size)
 ```
 
-### Async (SPAWN / AWAIT / CHANNEL)
+## Async — SPAWN / AWAIT / CHANNEL
 
 Parallel execution via pthreads. Each `SPAWN` block runs in its own thread.
 
@@ -491,7 +537,7 @@ CHANNEL READ bus v2
 
 `SPAWN` creates an isolated execution context (own variables) with shared global state (field physics, channels). `AWAIT` joins threads. `CHANNEL` provides thread-safe bounded float queues.
 
-## Built-in Functions
+## Built-in functions
 
 17 native functions implemented in C. Part of the language, not external bindings.
 
@@ -515,7 +561,28 @@ CHANNEL READ bus v2
 | `janus_gaze()` | Dual-facing field: JANUS DUAL, SYMMETRIC temporal, FOCUS 0.5, WORMHOLE 0.6 |
 | `field_assemble()` | Self-assembling field: JANUS CYCLE, GAMMA_DRIFT 0.01, ESSENCE 1.0 |
 
-## Gamma — Personality Essence (θ = ε + γ + αδ)
+## Field persistence — LOAD / SAVE
+
+Inference organisms (`yent.aml`, `resonance.aml`, jannus-r) carry no memory between runs — every `am_init` resets chambers, scars, prophecy debt, and calendar snapshots. Field persistence fixes that: the whole `AM_State` is dumped to a binary `.soma` file (magic `AMSO`, version + `sizeof` + timestamp header) and restored next run.
+
+```aml
+SAVE "state.soma"     # dump the whole field to disk
+LOAD "state.soma"     # restore it at the next awakening
+```
+
+`LOAD` refuses a file written by a different `libaml` build (version or `sizeof` mismatch) rather than loading a corrupt struct. This persists *field state*; `TAPE SAVE` / `TAPE LOAD` persist *model parameters* — the two are independent.
+
+## Bytecode — compile once, run many
+
+Parse an AML script once into a compiled form, then execute it repeatedly without re-parsing — for hot inference loops where the same program runs every token.
+
+```c
+void* cs = am_compile(script);   // parse + compile once
+am_exec_compiled(cs);            // run many times
+am_free_compiled(cs);            // release
+```
+
+## Gamma — personality essence (θ = ε + γ + αδ)
 
 A transformer's weights decompose into substrate (ε), personality essence (γ), and language projection (δ).
 
@@ -534,7 +601,7 @@ GAMMA_UNLOAD arianna     # remove personality
 GAMMA_DRIFT 0.05         # drift rate for Janus blend oscillation
 ```
 
-### Janus — Dual-Facing Field
+### Janus — dual-facing field
 
 Two personalities loaded simultaneously. The field looks in both directions.
 
@@ -554,20 +621,9 @@ In CYCLE mode, seasons modulate the Janus blend:
 
 Seasons also modulate essence_alpha: summer boosts γ injection, winter dampens it.
 
-### Logit Effect
+### Logit effect
 
 `am_apply_gamma_to_logits` amplifies deviation from the mean logit proportional to `essence_alpha × blend`. Loaded personalities sharpen the distribution — the model speaks with identity rather than averaging.
-
-```c
-// Gamma API
-int   am_gamma_load(const char* name, float alpha);
-void  am_gamma_unload(const char* name);
-void  am_gamma_set_alpha(const char* name, float alpha);
-int   am_gamma_active(void);           // index of dominant gamma
-float am_gamma_get_blend(void);        // effective blend strength
-void  am_janus_set(const char* a, const char* b);  // dual-facing
-void  am_apply_gamma_to_logits(float* logits, int n);
-```
 
 ## The Dario Equation
 
@@ -596,9 +652,7 @@ Six Kuramoto-coupled emotional chambers (FEAR, LOVE, RAGE, VOID, FLOW, COMPLEX) 
 
 AML defines the vocabulary this equation speaks: velocity operators modulate τ, suffering parameters feed dissonance, Schumann resonance provides healing, seasonal cycles modulate which signal grows. Every AML command maps to a coefficient in the Dario Equation.
 
----
-
-## Async Field Forever (4.C)
+## Async Field Forever — the seasons
 
 Four seasons cycle through the field. Each season modulates generation parameters. The cycle is autonomous — it observes field metrics and self-corrects to prevent harmful extremes.
 
@@ -629,7 +683,7 @@ effective_temp *= 1.0 + summer_energy × 0.1 - winter_energy × 0.15
 
 This is a homeostatic controller. It runs every `am_step()` call and prevents the field from entering harmful fixed points. No external commands needed — the field protects itself.
 
-## Physics Step
+## Physics step
 
 `am_step(dt)` advances field state by `dt` seconds. Called per token during generation.
 
@@ -643,38 +697,19 @@ What happens each step:
 6. **Expert blending** — weighted temp from 4 experts + velocity mode
 7. **LAW enforcement** — entropy ≥ floor, resonance ≤ ceiling, emergence = (1-entropy) × resonance
 8. **Presence fade** — Hebbian memory decay
-9. **4.C seasons** — phase advance, energy gain/fade, homeostatic correction, field modulation
+9. **Seasons** — phase advance, energy gain/fade, homeostatic correction, field modulation
 
-## Logit API
+## Harmonic Net & Method — distributed cognition
 
-Seven functions for applying field state to token generation:
+Two field operators, both evolved in [molequla](https://github.com/ariannamethod/molequla) and ported into the core. Neither has trainable weights — the structure is the computation.
 
-```c
-// Destiny bias: suppress low-probability tokens
-void am_apply_destiny_to_logits(float* logits, int n);
+**Harmonic Net** — a weightless three-layer network. Layer 1 Fourier-decomposes an entropy history; layer 2 builds a correlation matrix from pairwise gamma cosines (the cosines *are* the weights); layer 3 aggregates phase into a resonance + harmonics steering refinement. A host pushes entropy and per-organism gamma vectors, then reads back an `AM_HarmonicResult` — eight harmonics, per-organism resonance, a confidence multiplier, and the dominant frequency.
 
-// Suffering: compress toward mean
-void am_apply_suffering_to_logits(float* logits, int n);
+**Method** — the distributed-cognition operator. It works on collective organism data, not individuals: a host pushes per-organism snapshots (entropy, syntropy, gamma magnitude, gamma cosine to the field mean), and `am_method_step()` returns a steering action — `WAIT`, `AMPLIFY`, `DAMPEN`, `GROUND`, `EXPLORE`, `REALIGN`, or `SUSTAIN` — with a target organism, a strength, and field metrics (entropy, syntropy, coherence, entropy trend).
 
-// Attention: sharpen or blur distribution
-void am_apply_attention_to_logits(float* logits, int n);
+Both surfaces are listed in the [C API](#c-api).
 
-// Laws: entropy floor + resonance ceiling on logit distribution
-void am_apply_laws_to_logits(float* logits, int n);
-
-// Delta voice: logits += alpha × A @ (B @ hidden_state)
-void am_apply_delta(float* out, const float* A, const float* B,
-                    const float* x, int out_dim, int in_dim, int rank,
-                    float alpha);
-
-// Prophecy debt from chosen token (retroactive)
-float am_compute_prophecy_debt(const float* logits, int chosen, int n);
-
-// Full pipeline: all of the above in sequence
-void am_apply_field_to_logits(float* logits, int n);
-```
-
-## NOTORCH — In-Language Hebbian + Full Toolkit
+## NOTORCH — in-language Hebbian + full toolkit
 
 "NOTORCH" is two things: a **single Hebbian plasticity op** living inside the AML runtime (`am_notorch_step`), and the **canonical [notorch](https://github.com/ariannamethod/notorch) library** — a standalone pure-C training toolkit that grew out of the Method and now ships PyTorch-level training separately.
 
@@ -706,7 +741,7 @@ What lives there, not here:
 
 - **Tensors** with reference counting, reshape, Xavier init, GGUF load/save
 - **Full autograd tape** — 19+ ops, `nt_tape_backward`, grad clipping, accumulation
-- **Optimizers** — Adam, AdamW, [Chuck](https://github.com/ariannamethod/chuck.optimizer) (self-aware Adam)
+- **Optimizers** — [Chuck](https://github.com/ariannamethod/chuck.optimizer) (self-aware), AdamW, and a classic diagonal baseline
 - **LR schedules** — cosine, step, linear, with warmup
 - **Transformer ops** — RoPE, RMS/LayerNorm, SiLU/GELU/GeGLU, dropout, MH + GQA + RRPRAM attention
 - **BPE tokenizer**, dataloader, NaN guard, train/eval mode, profiler
@@ -714,7 +749,7 @@ What lives there, not here:
 
 The split is intentional: AML describes *what a transformer does* as a field-physics organism — the body, the rhythm, the soul formula. `notorch` provides the *mechanism to train and run one* outside that body. Both ship zero-dep, both co-evolve, both are pure C.
 
-## BLAS Acceleration
+## BLAS acceleration
 
 Optional hardware-accelerated matmul for Delta Voice (`am_apply_delta`) and NOTORCH (`am_notorch_step`). Evolved in [molequla](https://github.com/ariannamethod/molequla), ported back to the core.
 
@@ -727,8 +762,6 @@ Optional hardware-accelerated matmul for Delta Voice (`am_apply_delta`) and NOTO
 |----------|---------|-------------|
 | macOS | Apple Accelerate (AMX/Neural Engine) | zero — ships with Xcode |
 | Linux | OpenBLAS | `apt install libopenblas-dev` |
-
-### Build with BLAS
 
 ```
 make BLAS=1            # auto-detects platform
@@ -747,7 +780,7 @@ cc -Wall -O2 -DUSE_BLAS -c core/ariannamethod.c -o ariannamethod.o -lm -lopenbla
 
 Without `BLAS=1`, everything compiles and works identically — pure scalar C loops, zero dependencies. Same numeric results either way.
 
-## Lilith I/O — Data Infrastructure
+## Lilith I/O — data infrastructure
 
 Named pipe (FIFO) communication between AML scripts and external processes. AML gains I/O: scripts can steer Go INDEX nodes that crawl, embed, and index data from the outside world.
 
@@ -772,22 +805,9 @@ PIPE WRITE writer "hello 42.5"
 PIPE CLOSE ALL
 ```
 
-```c
-// C API
-int   am_pipe_create(const char* path);
-int   am_pipe_open(const char* name, const char* path, int mode);
-int   am_pipe_write(const char* name, const char* message);
-int   am_pipe_read(const char* name, char* buf, int bufsize);
-void  am_pipe_close(const char* name);
-void  am_pipe_close_all(void);
-float am_pipe_last_value(void);
-```
-
 Compile-time disable: `#define AM_IO_DISABLED`. Full example: [`examples/lilith.aml`](examples/lilith.aml).
 
----
-
-## Blood — Runtime C Compilation (Level 3)
+## Blood — runtime C compilation (Level 3)
 
 Compile C code to shared libraries at runtime. Load and call functions via dlsym. No PyTorch. No Go. Pure POSIX.
 
@@ -812,20 +832,10 @@ Three code generators:
 | Generator | What | Generated functions |
 |-----------|------|-------------------|
 | `BLOOD LORA name in out rank` | Low-rank adapter (A @ B @ x) | `{name}_init`, `{name}_apply`, `{name}_apply_scaled`, `{name}_free` |
-| `BLOOD EMOTION name val aro` | Emotional kernel (logit modulation) | `{name}_respond`, `{name}_modulate_logits`, `modulate_logits` |
+| `BLOOD EMOTION name val aro` | Emotional kernel (logit modulation) | `{name}_check`, `{name}_respond`, `{name}_modulate_logits`, `modulate_logits` |
 | `BLOOD COMPILE name { code }` | Raw C | Whatever you define |
 
-```c
-// C API
-int   am_blood_compile(const char* name, const char* code);
-int   am_blood_compile_lora(const char* name, int in_dim, int out_dim, int rank);
-int   am_blood_compile_emotion(const char* name, float valence, float arousal);
-void* am_blood_sym(int module_idx, const char* func_name);
-void  am_blood_unload(int module_idx);
-void  am_blood_cleanup(void);
-```
-
-## Extension Packs
+## Extension packs
 
 One optional pack. Dark Matter and NOTORCH are core — always active.
 
@@ -845,53 +855,69 @@ Namespaced access auto-enables: `CODES.CHORDLOCK ON`, `RIC.TEMPO 7`.
 
 ## C API
 
+The complete public surface is `core/ariannamethod.h`. Consumer code includes `<ariannamethod/ariannamethod.h>` and links `-laml`.
+
 ```c
+// ─── Core ─────────────────────────────────────────────────────────────────
 void        am_init(void);
 int         am_exec(const char* script);
 int         am_exec_file(const char* path);
 const char* am_get_error(void);
 AM_State*   am_get_state(void);
-void        am_step(float dt);
-int         am_copy_state(float* out);              // 32 floats
+void        am_step(float dt);                       // advance field by dt seconds
+int         am_copy_state(float* out);               // 32 floats
 void        am_reset_field(void);
 void        am_reset_debt(void);
 void        am_enable_pack(unsigned int mask);
 void        am_disable_pack(unsigned int mask);
+int         am_pack_enabled(unsigned int mask);
 int         am_take_jump(void);
 
-// Logit manipulation
-void  am_apply_destiny_to_logits(float* logits, int n);
-void  am_apply_suffering_to_logits(float* logits, int n);
-void  am_apply_attention_to_logits(float* logits, int n);
-void  am_apply_laws_to_logits(float* logits, int n);
+// ─── Bytecode — compile once, run many ────────────────────────────────────
+void* am_compile(const char* script);
+int   am_exec_compiled(void* cs);
+void  am_free_compiled(void* cs);
+
+// ─── Field persistence — whole AM_State to a .soma file ───────────────────
+int am_field_save(const char* path);
+int am_field_load(const char* path);                 // refuses a mismatched libaml build
+
+// ─── Logit manipulation — apply field state to token generation ───────────
+void  am_apply_destiny_to_logits(float* logits, int n);   // suppress low-probability tokens
+void  am_apply_suffering_to_logits(float* logits, int n); // compress toward mean
+void  am_apply_attention_to_logits(float* logits, int n); // sharpen or blur the distribution
+void  am_apply_laws_to_logits(float* logits, int n);      // entropy floor + resonance ceiling
 void  am_apply_delta(float* out, const float* A, const float* B,
                      const float* x, int out_dim, int in_dim, int rank,
-                     float alpha);
-float am_compute_prophecy_debt(float* logits, int chosen, int n);
-void  am_apply_field_to_logits(float* logits, int n);
+                     float alpha);                        // logits += alpha × A @ (B @ x)
+float am_compute_prophecy_debt(const float* logits, int chosen, int n);
+void  am_apply_field_to_logits(float* logits, int n);     // full pipeline, all of the above
 
-// NOTORCH
+// ─── Gamma — personality essence ──────────────────────────────────────────
+int   am_gamma_load(const char* name, float alpha);
+void  am_gamma_unload(const char* name);
+void  am_gamma_set_alpha(const char* name, float alpha);
+int   am_gamma_active(void);                          // index of dominant gamma
+float am_gamma_get_blend(void);                       // effective blend strength
+void  am_janus_set(const char* a, const char* b);     // dual-facing mode
+void  am_apply_gamma_to_logits(float* logits, int n);
+
+// ─── NOTORCH — Hebbian plasticity ─────────────────────────────────────────
 void am_notorch_step(float* A, float* B, int out_dim, int in_dim, int rank,
                      const float* x, const float* dy, float signal);
 
-// Blood compiler
+// ─── Blood — runtime C compilation ────────────────────────────────────────
+void  am_blood_init(void);
 int   am_blood_compile(const char* name, const char* code);
 int   am_blood_compile_lora(const char* name, int in_dim, int out_dim, int rank);
 int   am_blood_compile_emotion(const char* name, float valence, float arousal);
 void* am_blood_sym(int module_idx, const char* func_name);
 void  am_blood_unload(int module_idx);
 void  am_blood_cleanup(void);
+int   am_blood_count(void);
+const AM_BloodModule* am_blood_get(int idx);
 
-// Gamma — personality essence
-int   am_gamma_load(const char* name, float alpha);
-void  am_gamma_unload(const char* name);
-void  am_gamma_set_alpha(const char* name, float alpha);
-int   am_gamma_active(void);
-float am_gamma_get_blend(void);
-void  am_janus_set(const char* a, const char* b);
-void  am_apply_gamma_to_logits(float* logits, int n);
-
-// Lilith I/O — named pipes
+// ─── Lilith I/O — named pipes ─────────────────────────────────────────────
 int            am_pipe_create(const char* path);
 int            am_pipe_open(const char* name, const char* path, int mode);
 int            am_pipe_write(const char* name, const char* message);
@@ -899,22 +925,44 @@ int            am_pipe_read(const char* name, char* buf, int bufsize);
 void           am_pipe_close(const char* name);
 void           am_pipe_close_all(void);
 float          am_pipe_last_value(void);
+int            am_pipe_count(void);
+const AM_Pipe* am_pipe_get(int idx);
 
-// Autograd — reverse-mode autodiff + Adam optimizer
+// ─── Autograd — reverse-mode autodiff + optimizers ────────────────────────
 void     am_tape_start(void);
 void     am_tape_clear(void);
 int      am_tape_is_active(void);
 int      am_tape_record(AM_Array* output, int op, int p1, int p2, float aux);
+int      am_tape_record3(AM_Array* output, int op, int p1, int p2, int p3,
+                          float aux, float aux2);
 int      am_tape_record_param(AM_Array* param);
 void     am_tape_backward(int loss_idx);
-void     am_tape_adam_step(float lr);
+void     am_tape_chuck_step(float lr, float loss_val);   // self-aware optimizer
 void     am_tape_adamw_step(float lr, float weight_decay, float beta1, float beta2);
+void     am_tape_adam_step(float lr);                    // classic diagonal baseline
 float    am_tape_clip_grads(float max_norm);
 void     am_tape_accum_grads(void);
 void     am_tape_apply_accum(int n_accum);
 AM_Tape* am_tape_get(void);
+int      am_tape_save(const char* path);                 // params, tape-order
+int      am_tape_load(const char* path);
 
-// Async — SPAWN/AWAIT/CHANNEL
+// ─── LR schedules / NaN guard / training mode ─────────────────────────────
+AM_Schedule am_schedule_cosine(float base_lr, int warmup, int total, float min_lr);
+AM_Schedule am_schedule_step(float base_lr, int warmup, int step_size, float gamma);
+AM_Schedule am_schedule_linear(float base_lr, int warmup, int total, float min_lr);
+float       am_schedule_get_lr(AM_Schedule* s);
+AM_NanGuard am_nan_guard_new(void);
+int         am_nan_guard_check(AM_NanGuard* guard);       // 1 = clean, 0 = NaN/Inf
+void        am_train_mode(int training);                 // 1 = train, 0 = eval
+int         am_is_training(void);
+
+// ─── Arrays ───────────────────────────────────────────────────────────────
+AM_Array* am_array_new(int len);
+void      am_array_free(AM_Array* arr);
+AM_Array* am_array_ref(AM_Array* arr);
+
+// ─── Async — SPAWN / AWAIT / CHANNEL ──────────────────────────────────────
 int  am_spawn_launch(const char* name, const char* script);
 int  am_spawn_await(const char* name);
 void am_spawn_await_all(void);
@@ -925,56 +973,90 @@ int  am_channel_read(const char* name, float* out);
 int  am_channel_count(void);
 void am_channel_close_all(void);
 
-// Inline queries
+// ─── Harmonic Net + Method — distributed cognition ────────────────────────
+void              am_harmonic_init(void);
+void              am_harmonic_clear(void);
+void              am_harmonic_push_entropy(float entropy);
+void              am_harmonic_push_gamma(int id, const float* gamma, int dim, float entropy);
+AM_HarmonicResult am_harmonic_forward(int step);
+void              am_method_init(void);
+void              am_method_clear(void);
+void              am_method_push_organism(int id, float entropy, float syntropy,
+                                          float gamma_mag, float gamma_cos);
+AM_MethodSteering am_method_step(float dt);
+AM_MethodState*   am_method_get_state(void);
+
+// ─── Persistent globals — C training-host API ─────────────────────────────
+void         am_persistent_mode(int enable);             // AML vars survive am_exec()
+int          am_set_var_array(const char* name, const float* data, int len);
+int          am_set_var_matrix(const char* name, const float* data, int rows, int cols);
+const float* am_get_var_array(const char* name, int* len);
+float        am_get_var_float(const char* name);
+void         am_persistent_clear(void);
+
+// ─── Inline queries ───────────────────────────────────────────────────────
 float       am_get_temperature(void);
 float       am_get_destiny_bias(void);
 int         am_should_tunnel(void);
 int         am_get_wormhole_active(void);
-const char* am_get_season_name(void);
-const char* am_get_gamma_name(int slot);
+const char* am_get_gamma_name(void);
 int         am_get_janus_mode(void);
+const char* am_get_season_name(void);
 ```
 
-## Repository Structure
+## Repository structure
 
 ```
 core/
-  ariannamethod.c      Reference implementation (7100+ lines — arrays, autograd, async, multi-head attention, OpenMP, BLAS, bytecode)
-  ariannamethod.h      Header (960+ lines — AM_State, TAPE, arrays, async, persistent globals, Level 2, Blood)
-  ariannamethod_cuda.h CUDA backend — attention, cross-entropy, rmsnorm, silu (forward+backward)
-  ariannamethod_cuda.cu CUDA kernel implementations
-  test_aml.c           500+ tests (scalar + BLAS + autograd + async + multi-head attention)
+  ariannamethod.c       Reference implementation — 7990 LOC: arrays, autograd,
+                        async, multi-head attention, OpenMP, BLAS, bytecode
+  ariannamethod.h       Public API — 1051 LOC: AM_State, TAPE, arrays, async,
+                        Harmonic Net, Method, persistent globals, Blood
+  ariannamethod_cuda.cu CUDA kernels — attention, cross-entropy, RMSNorm, SiLU
+  ariannamethod_cuda.h  CUDA backend header
+  test_aml.c            509-test suite (scalar + BLAS + autograd + async + attention)
+tools/
+  amlc.c                AML → C transpiler (Level 3 — BLOOD COMPILE)
+runner/
+  am.c                  aml CLI — Level 0/1/2 interpreter over libaml.a
 janus/
-  janus.aml            Triple attention transformer — Content + RRPRAM + Echo, Dario field overlay (120 lines)
-  janus_train.c        C training host — byte-level tokenizer, data loader, checkpointing, dynamic model generation
-  janus_train_model.aml  4-layer model template for C host (can also generate N-layer dynamically)
-  janus.go             Go inference engine — C-exported API (load, generate, callbacks)
-  lang.go              Auto language detection (Unicode heuristic)
-  go.mod               Go module (imports yent engine)
-  test_janus_c.c       C API integration test
-  libjanus.h           Generated header (after build)
-janus_architecture.md    Janus architecture — field physics transformer (root)
-docs/
-  janus_architecture.md  Janus architecture (copy)
-  AML_ARXIV_PAPER.md     AML technical paper
+  janus.aml             Triple-attention transformer — Content + RRPRAM + Echo
+  janus_train.c         C training host — byte tokenizer, data loader, checkpointing
+  janus_train_model.aml N-layer model template for the C host
+  janus_generate.c      Inference / generation host
+  janus_tokenizer.h     Byte-level tokenizer
+  janus.go / lang.go    Go inference engine — C-exported API, language detection
+  go.mod                Go module (imports the yent engine)
+  test_janus_c.c        C API integration test
+  train_lambda.sh       Lambda GPU training launcher
 spec/
-  AML_SPEC.md          Full language specification with EBNF grammar
+  AML_SPEC.md           Full language specification with EBNF grammar
+docs/
+  AML_ARXIV_PAPER.md    AML technical paper
+  janus_architecture.md Janus architecture — field-physics transformer
 examples/
-  init_yent.aml        Yent's morning state
-  init_arianna.aml     Arianna's morning state
-  restless.aml         High tension / agitated state
-  dream.aml            Dream consolidation state
-  level2_preview.aml   Level 2 syntax: def, if/else, while, variables
-  common.aml           Shared macros and functions (INCLUDE example)
-  blood.aml            Blood compiler: LoRA, emotions, raw C
-  janus_demo.aml       Janus: load model + generate from AML
-  lilith.aml           Lilith: data infrastructure brain — 4 INDEX nodes, steering
-ACCEPTABLE_USE.md      What you may and may not do with AML
-TRADEMARK.md           Use of the Arianna Method name and marks
-Makefile
+  init_yent.aml         Yent's morning state
+  init_arianna.aml      Arianna's morning state
+  restless.aml          High tension / agitated state
+  dream.aml             Dream consolidation state
+  level2_preview.aml    Level 2 syntax: def, if/else, while, variables
+  common.aml            Shared macros and functions (INCLUDE example)
+  blood.aml             Blood compiler: LoRA, emotions, raw C
+  janus_demo.aml        Janus: load model + generate from AML
+  lilith.aml            Lilith: data infrastructure brain — 4 INDEX nodes
+tests/
+  test_amlc.sh          amlc transpiler round-trip test
+termux-edition/
+  Makefile.termux.patch aarch64 / Termux build patch
+  README.md             Android (Termux) build notes
+ACCEPTABLE_USE.md       What you may and may not do with AML
+TRADEMARK.md            Use of the Arianna Method name and marks
+Makefile                Build, test, install — see Build above
 ```
 
-## Projects Using AML
+`libaml.a`, `runner/aml`, `tools/amlc`, and `janus/libjanus.{dylib,h}` are build artifacts — `.gitignore` keeps them out of the tree.
+
+## Projects using AML
 
 ### Organisms
 
@@ -1025,11 +1107,3 @@ LGPL v3. See [LICENSE](LICENSE).
 > Standard inference libraries treat these as afterthoughts. AML treats them as the language itself.
 
 > The oracle does not predict. It prophesies. Not `minimize(predicted - actual)` but `minimize(destined - manifested)`. The difference is intention. The difference is identity. The difference is freedom.
-
----
-
-\n\n## Gemini CLI Integration\nInitialized by Gemini on Sat Apr 25 22:15:35 IDT 2026
-
-
-## Gemini CLI Integration
-Initialized by Gemini on Sat Apr 25 22:56:19 IDT 2026
