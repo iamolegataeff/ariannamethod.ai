@@ -1,6 +1,18 @@
 # AML: A Machine Learning Language for Building and Training Transformers with Field Physics
 ---
 
+> **Status — living draft.** This is a working draft, not a published
+> paper and not submitted to arXiv. It is written and revised over time
+> and currently trails the released language. As of AML `v4.8.0`
+> (2026-05) it is stale on at least: core size (`core/ariannamethod.c`
+> is ~8,000 lines / `ariannamethod.h` ~1,050, not the "7,400+ / 940+"
+> cited below); Janus scale (the reference model is now 176M params,
+> val bpb 0.866 — the 8.55M / loss 3.24 run in the Results section is an
+> early checkpoint); and the version timeline (it stops at v4.5 and does
+> not cover v4.6–v4.8). For the current state of the language see the
+> [README](../README.md) and the [release notes](https://github.com/ariannamethod/ariannamethod.ai/releases).
+> A refreshed revision (and a Zenodo deposit) is intended.
+
 ## Abstract
 
 We present AML (Arianna Method Language), a complete machine learning language that defines, trains, and runs transformers with integrated field physics. AML compiles to C — arrays, matrices, reverse-mode autodiff, multi-head causal attention, async threading, bytecode compilation, optional CUDA/cuBLAS backend, and 80+ parameters of internal state. Every command maps to a concrete operation: from logit manipulation during inference to gradient computation during training. No Python. No PyTorch. No dependencies.

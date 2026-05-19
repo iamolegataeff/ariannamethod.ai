@@ -1032,7 +1032,7 @@ janus/
 spec/
   AML_SPEC.md           Full language specification with EBNF grammar
 docs/
-  AML_ARXIV_PAPER.md    AML technical paper
+  AML_PAPER_DRAFT.md    AML technical paper (living draft)
   janus_architecture.md Janus architecture — field-physics transformer
 examples/
   init_yent.aml         Yent's morning state
