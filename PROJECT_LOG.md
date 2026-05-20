@@ -17,12 +17,13 @@ Live log for the AML language repo. Newest first.
   branch deleted**. `docs/AML_PAPER_DRAFT.md` (the renamed former
   `AML_ARXIV_PAPER.md`) is removed from the repo in this commit, with
   its README pointer.
-- Reason: the paper work judged the language by operator names and the
-  interpreter's builtin table instead of the real implementation. The
-  field-physics features (RRPRAM, triple gate, dark matter, wormhole,
-  Dario overlay) are **real code** (`janus.c`, `core/ariannamethod.c`
-  consumers), not cosmology or metaphor. The draft was not trustworthy
-  and is dropped rather than published.
+- Why removed: the draft described the language from operator names and
+  the interpreter's builtin table, not from the implementation that runs.
+  The field-physics operators (RRPRAM, triple gate, dark matter, wormhole,
+  Dario overlay) are real, months-grown code (`janus.c`,
+  `core/ariannamethod.c` consumers). A language paper has to be written
+  from that code; this one was not, so it is dropped. Frame for any future
+  paper: read the implementation first.
 
 ### State
 - `main` clean, v4.8.0 is the latest release. No paper in the repo.
