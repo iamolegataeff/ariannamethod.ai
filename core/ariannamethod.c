@@ -7426,7 +7426,7 @@ void am_pipe_close_all(void) {
         }
     }
     g_pipe_count = 0;
-    printf("[LILITH] all pipes closed\n");
+    fprintf(stderr, "[LILITH] all pipes closed\n");
 }
 
 float am_pipe_last_value(void) { return g_pipe_last_value; }
