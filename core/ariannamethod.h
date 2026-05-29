@@ -457,6 +457,9 @@ int  am_cooc_count(void);   // live co-occurrence edge count (telemetry)
 int  am_cooc_consolidate(float reinforce, float prune_floor); // autumn harvest: reinforce strong edges, decay+prune weak; returns # pruned
 int  am_cooc_consolidate_autumn(void); // gated consolidate: fires only in deep autumn; returns # pruned or -1 if not triggered
 void am_cooc_stats(float* out_mean, float* out_max); // mean/max edge weight over live edges (telemetry)
+int  am_cooc_learn_delta(float* A, float* B, const float* emb, int vocab, int E, int rank); // fold cooc edges into low-rank delta (A=[E,rank],B=[rank,E])
+int  am_delta_save(const char* path, const float* A, const float* B, int E, int rank); // persist per-voice delta sidecar
+int  am_delta_load(const char* path, float* A, float* B, int E, int rank); // load per-voice delta sidecar (dim mismatch -> -3)
 
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n);

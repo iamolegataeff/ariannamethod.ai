@@ -972,6 +972,41 @@ int am_cooc_load(const char* path) {
   return 0;
 }
 
+// Low-rank delta voice (B2-B) persistence. A=[E,rank], B=[rank,E] are host-owned
+// per-voice buffers (NOT in soma — kept out of AM_State to avoid an ABI bump).
+// magic + dims + A + B. Dim mismatch on load → -3 so the caller keeps its zeros.
+#define AM_DELTA_MAGIC 0x444C5441u  /* 'D','L','T','A' */
+int am_delta_save(const char* path, const float* A, const float* B, int E, int rank) {
+  if (!path || !path[0] || !A || !B || E <= 0 || rank <= 0) return -1;
+  FILE* f = fopen(path, "wb");
+  if (!f) return -1;
+  uint32_t magic = AM_DELTA_MAGIC;
+  size_t na = (size_t)E * rank, nb = (size_t)rank * E;
+  if (fwrite(&magic, 4, 1, f) != 1 || fwrite(&E, 4, 1, f) != 1 ||
+      fwrite(&rank, 4, 1, f) != 1 ||
+      fwrite(A, sizeof(float), na, f) != na ||
+      fwrite(B, sizeof(float), nb, f) != nb) {
+    fclose(f); return -2;
+  }
+  fclose(f);
+  return 0;
+}
+
+int am_delta_load(const char* path, float* A, float* B, int E, int rank) {
+  if (!path || !path[0] || !A || !B || E <= 0 || rank <= 0) return -1;
+  FILE* f = fopen(path, "rb");
+  if (!f) return -1;   /* missing = fresh delta (caller keeps zeros) */
+  uint32_t magic = 0; int fe = 0, fr = 0;
+  if (fread(&magic, 4, 1, f) != 1 || magic != AM_DELTA_MAGIC) { fclose(f); return -2; }
+  if (fread(&fe, 4, 1, f) != 1 || fread(&fr, 4, 1, f) != 1 ||
+      fe != E || fr != rank) { fclose(f); return -3; }  /* dim mismatch */
+  size_t na = (size_t)E * rank, nb = (size_t)rank * E;
+  if (fread(A, sizeof(float), na, f) != na ||
+      fread(B, sizeof(float), nb, f) != nb) { fclose(f); return -4; }
+  fclose(f);
+  return 0;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LEVEL 2 INFRASTRUCTURE — error, field map, symbol table
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -6944,6 +6979,39 @@ void am_cooc_stats(float* out_mean, float* out_max) {
     }
     if (out_mean) *out_mean = (G.cooc_n > 0) ? sum / (float)G.cooc_n : 0.0f;
     if (out_max)  *out_max  = mx;
+}
+
+// Fold the live co-occurrence edges into a low-rank delta voice (A,B) via the
+// notorch Hebbian step (B2-B). For each edge src->dst the field learns to nudge
+// a src-like hidden state toward the (dst-src) embedding direction, weighted by
+// edge strength. am_notorch_step trains A_p=[in,rank] from its x arg and
+// B_p=[rank,out] from its dy arg — the *transpose* of am_apply_delta's layout
+// (A=[out,rank], B=[rank,in]). With in=out=E we get the apply layout directly by
+// swapping the two vectors: pass the target direction as x and the input as dy.
+// Run in autumn after consolidation (only strong edges survive). Returns # folded.
+int am_cooc_learn_delta(float* A, float* B, const float* emb, int vocab,
+                        int E, int rank) {
+    if (!A || !B || !emb || vocab <= 0 || E <= 0 || rank <= 0 || G.cooc_n <= 0)
+        return 0;
+    float maxc = 1e-12f;
+    for (int e = 0; e < G.cooc_n; e++) if (G.cooc_cnt[e] > maxc) maxc = G.cooc_cnt[e];
+
+    float* dy = (float*)malloc((size_t)E * sizeof(float));
+    if (!dy) return 0;
+    int folded = 0;
+    for (int e = 0; e < G.cooc_n; e++) {
+        int src = G.cooc_src[e], dst = G.cooc_dst[e];
+        if (src < 0 || dst < 0 || src >= vocab || dst >= vocab) continue;
+        const float* xs = emb + (size_t)src * E;            /* input: src embedding */
+        const float* xd = emb + (size_t)dst * E;
+        for (int i = 0; i < E; i++) dy[i] = xd[i] - xs[i];  /* target direction */
+        float signal = G.cooc_cnt[e] / maxc;                /* edge strength in (0,1] */
+        /* swap (x=dy_target, dy=x_input) -> A=[E,rank], B=[rank,E] for am_apply_delta */
+        am_notorch_step(A, B, E, E, rank, dy, xs, signal);
+        folded++;
+    }
+    free(dy);
+    return folded;
 }
 
 // Full pipeline: apply all field effects to logits
