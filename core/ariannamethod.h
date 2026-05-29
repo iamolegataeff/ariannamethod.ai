@@ -106,6 +106,7 @@ void am_free_compiled(void* cs);
 // (n=0) → H-term contributes nothing → other organisms unaffected.
 #define AM_COOC_MAX        4096   // max co-occurrence edges (~48KB in AM_State)
 #define AM_COOC_CTX        8      // context window read by the H-term
+#define AM_COOC_AUTUMN_PRUNE 0.30f // autumn-gate prune floor: edges under this weight are forgotten
 
 typedef struct {
     char  name[AM_GAMMA_NAME_LEN]; // personality name (e.g. "yent", "arianna")
@@ -453,6 +454,9 @@ void am_cooc_update(int src, int dst, float delta);
 void am_ingest_tokens(const int* ids, int n);
 void am_apply_hebbian_to_logits(float* logits, int n);
 int  am_cooc_count(void);   // live co-occurrence edge count (telemetry)
+int  am_cooc_consolidate(float reinforce, float prune_floor); // autumn harvest: reinforce strong edges, decay+prune weak; returns # pruned
+int  am_cooc_consolidate_autumn(void); // gated consolidate: fires only in deep autumn; returns # pruned or -1 if not triggered
+void am_cooc_stats(float* out_mean, float* out_max); // mean/max edge weight over live edges (telemetry)
 
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n);

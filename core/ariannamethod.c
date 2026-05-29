@@ -6875,6 +6875,77 @@ void am_apply_hebbian_to_logits(float* logits, int n) {
     free(H);
 }
 
+// Ascending float compare for qsort (median split point).
+static int am_cmp_float_asc(const void* a, const void* b) {
+    float fa = *(const float*)a, fb = *(const float*)b;
+    return (fa > fb) - (fa < fb);
+}
+
+// Autumn consolidation (Dario "harvest"): reinforce edges at/above the median
+// co-occurrence weight, decay those below, then prune edges that fell under
+// prune_floor (stable forward compaction). Models "important remembered, noise
+// forgotten" and frees slots before AM_COOC_MAX saturation. Returns # pruned.
+int am_cooc_consolidate(float reinforce, float prune_floor) {
+    int n = G.cooc_n;
+    if (n <= 0) return 0;
+    if (reinforce < 0.0f) reinforce = 0.0f;
+    if (reinforce > 0.9f) reinforce = 0.9f;   // keep (1±r) sane
+
+    // Median weight over the current edges (split point for reinforce vs decay).
+    float* tmp = (float*)malloc((size_t)n * sizeof(float));
+    if (!tmp) return 0;
+    for (int i = 0; i < n; i++) tmp[i] = G.cooc_cnt[i];
+    qsort(tmp, (size_t)n, sizeof(float), am_cmp_float_asc);
+    float median = tmp[n / 2];
+    free(tmp);
+
+    // Reinforce strong edges, decay weak ones (clamp upper to avoid blowup).
+    const float CNT_CAP = 1e6f;
+    for (int i = 0; i < n; i++) {
+        if (G.cooc_cnt[i] >= median) {
+            G.cooc_cnt[i] *= (1.0f + reinforce);
+            if (G.cooc_cnt[i] > CNT_CAP) G.cooc_cnt[i] = CNT_CAP;
+        } else {
+            G.cooc_cnt[i] *= (1.0f - reinforce);
+        }
+    }
+
+    // Prune edges below the floor — forget the long tail (stable compaction).
+    int w = 0;
+    for (int r = 0; r < n; r++) {
+        if (G.cooc_cnt[r] >= prune_floor) {
+            if (w != r) {
+                G.cooc_src[w] = G.cooc_src[r];
+                G.cooc_dst[w] = G.cooc_dst[r];
+                G.cooc_cnt[w] = G.cooc_cnt[r];
+            }
+            w++;
+        }
+    }
+    int pruned = n - w;
+    G.cooc_n = w;
+    return pruned;
+}
+
+// Autumn gate: consolidate once per call IFF the field sits in deep autumn.
+// Reinforce intensity scales with autumn_energy (harvest strength). Returns
+// # pruned, or -1 when not triggered (wrong season / low energy → cooc untouched).
+int am_cooc_consolidate_autumn(void) {
+    if (G.season != AM_SEASON_AUTUMN || G.autumn_energy <= 0.6f) return -1;
+    return am_cooc_consolidate(0.05f * G.autumn_energy, AM_COOC_AUTUMN_PRUNE);
+}
+
+// Telemetry: mean and max co-occurrence weight over the live edges.
+void am_cooc_stats(float* out_mean, float* out_max) {
+    float sum = 0.0f, mx = 0.0f;
+    for (int i = 0; i < G.cooc_n; i++) {
+        sum += G.cooc_cnt[i];
+        if (G.cooc_cnt[i] > mx) mx = G.cooc_cnt[i];
+    }
+    if (out_mean) *out_mean = (G.cooc_n > 0) ? sum / (float)G.cooc_n : 0.0f;
+    if (out_max)  *out_max  = mx;
+}
+
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n) {
     if (!logits || n <= 0) return;
