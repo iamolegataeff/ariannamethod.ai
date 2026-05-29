@@ -483,6 +483,12 @@ void am_apply_field_to_logits(float* logits, int n);
 int am_field_save(const char* path);
 int am_field_load(const char* path);
 
+// Co-occurrence sidecar (per-voice) — cooc edges are voice-local token-ids, kept
+// out of the shared soma to avoid cross-vocab contamination. Load after the soma
+// LOAD (overwrites contaminated cooc), save on exit. Missing file = fresh.
+int am_cooc_save(const char* path);
+int am_cooc_load(const char* path);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // NOTORCH — Hebbian plasticity without PyTorch
 // ═══════════════════════════════════════════════════════════════════════════════

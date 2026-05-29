@@ -925,6 +925,53 @@ int am_field_load(const char* path) {
   return 0;
 }
 
+// ── Co-occurrence sidecar (per-voice) ──────────────────────────────────────
+// cooc edges are token-ids in a voice's OWN vocab (Janus 32759 / Resonance 16128),
+// so they must NOT travel through the shared soma (cross-contamination). Each
+// voice persists its cooc in a separate file and loads it back after the shared
+// soma LOAD, overwriting whatever contaminated cooc the soma carried. The shared
+// soma still carries the cross-voice field (debt / dissonance / chambers).
+#define AM_COOC_MAGIC 0x434F4F43u  /* 'C','O','O','C' */
+int am_cooc_save(const char* path) {
+  if (!path || !path[0]) return -1;
+  FILE* f = fopen(path, "wb");
+  if (!f) return -1;
+  uint32_t magic = AM_COOC_MAGIC;
+  int n = G.cooc_n;
+  if (fwrite(&magic, 4, 1, f) != 1 || fwrite(&n, 4, 1, f) != 1 ||
+      fwrite(&G.cooc_total, 4, 1, f) != 1 ||
+      fwrite(&G.ctx_ring_n, 4, 1, f) != 1 ||
+      fwrite(G.ctx_ring, sizeof(int), AM_COOC_CTX, f) != (size_t)AM_COOC_CTX ||
+      fwrite(G.cooc_src, sizeof(int),   n, f) != (size_t)n ||
+      fwrite(G.cooc_dst, sizeof(int),   n, f) != (size_t)n ||
+      fwrite(G.cooc_cnt, sizeof(float), n, f) != (size_t)n) {
+    fclose(f); return -2;
+  }
+  fclose(f);
+  return 0;
+}
+
+int am_cooc_load(const char* path) {
+  if (!path || !path[0]) return -1;
+  FILE* f = fopen(path, "rb");
+  if (!f) return -1;   /* missing = fresh per-voice cooc */
+  uint32_t magic = 0; int n = 0;
+  if (fread(&magic, 4, 1, f) != 1 || magic != AM_COOC_MAGIC) { fclose(f); return -2; }
+  if (fread(&n, 4, 1, f) != 1 || n < 0 || n > AM_COOC_MAX) { fclose(f); return -3; }
+  if (fread(&G.cooc_total, 4, 1, f) != 1 ||
+      fread(&G.ctx_ring_n, 4, 1, f) != 1 ||
+      fread(G.ctx_ring, sizeof(int), AM_COOC_CTX, f) != (size_t)AM_COOC_CTX ||
+      fread(G.cooc_src, sizeof(int),   n, f) != (size_t)n ||
+      fread(G.cooc_dst, sizeof(int),   n, f) != (size_t)n ||
+      fread(G.cooc_cnt, sizeof(float), n, f) != (size_t)n) {
+    fclose(f); return -4;
+  }
+  G.cooc_n = n;
+  if (G.ctx_ring_n < 0 || G.ctx_ring_n > AM_COOC_CTX) G.ctx_ring_n = 0;
+  fclose(f);
+  return 0;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LEVEL 2 INFRASTRUCTURE — error, field map, symbol table
 // ═══════════════════════════════════════════════════════════════════════════════
