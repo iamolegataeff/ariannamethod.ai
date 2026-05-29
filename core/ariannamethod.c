@@ -576,6 +576,7 @@ void am_init(void) {
   // live metrics (computed each step)
   G.entropy = 0.0f;
   G.resonance = 0.0f;
+  G.resonance_set = 0.0f;   // RESONANCE floor off by default
   G.emergence = 0.0f;
   G.destiny_bias = 0.0f;
 
@@ -3457,8 +3458,12 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
       G.field_enabled = strcmp(argup, "OFF") ? 1 : 0;
     }
     else if (!strcmp(t, "RESONANCE")) {
-      // RESONANCE <float> — set current field resonance (0..1)
-      G.resonance = clamp01(ctx_float(ctx, arg));
+      // RESONANCE <float> — set a resonance FLOOR: the field is held at or above
+      // this level. Stored in resonance_set and enforced in am_step's recompute
+      // (raw_resonance = max(computed, set)); without the floor am_step would
+      // overwrite the set value on the first tick. 0 = no floor (default).
+      G.resonance_set = clamp01(ctx_float(ctx, arg));
+      G.resonance = fmaxf(G.resonance, G.resonance_set);
     }
     else if (!strcmp(t, "WORMHOLE")) {
       G.wormhole = clamp01(ctx_float(ctx, arg));
@@ -3554,7 +3559,12 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
       }
       if (path[0]) {
         if (!strcmp(t, "LOAD")) am_field_load(path);
-        else                    am_field_save(path);
+        /* SAVE: propagate a real I/O failure into ctx->error so am_exec returns
+         * non-zero and callers' rc-checks are meaningful (am_field_save returns
+         * -1 on fopen fail, -2 on short write). LOAD intentionally ignores rc:
+         * a missing file is a legitimate fresh start. */
+        else if (am_field_save(path) < 0)
+          set_error_at(ctx, lineno, "SAVE: field save failed");
       }
     }
 
@@ -6744,8 +6754,9 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n) {
 
 // Accrue per-token prophecy debt into the field (Fix D). A chosen token that
 // deviates from the peak is an unfulfilled prophecy → debt grows. The system
-// keeps debt minimal via decay (debt_decay) + velocity DOWN / BACKWARD recovery;
-// rejections feed dark-matter gravity. Without this, inference choices were
+// keeps debt minimal two ways, both in am_step: per-step decay (debt_decay), and
+// the recovery rule (debt > 5 → velocity NOMOVE, cold observer) that slows the
+// field until decay drains the debt. Without this, inference choices were
 // computed (am_compute_prophecy_debt) and discarded — never reached the field.
 void am_register_prophecy_debt(float debt) {
     if (debt <= 0.0f) return;
@@ -7540,6 +7551,19 @@ void am_step(float dt) {
   if (G.debt > 100.0f) G.debt = 100.0f;
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // PROPHECY DEBT RECOVERY (D4) — the system keeps prophecy debt minimal while
+  // preserving coherence. When debt crosses the threshold the field slows down
+  // (velocity DOWN → NOMOVE, cold observer temp 0.5): a quieter, more peaked
+  // distribution makes fewer off-peak choices, so debt stops growing and decay
+  // (above) brings it back down. velocity_mode feeds update_effective_temp →
+  // effective_temp → entropy, so this is a live coupling, not a stored flag.
+  // ─────────────────────────────────────────────────────────────────────────────
+  if (G.debt > 5.0f && G.velocity_mode != AM_VEL_NOMOVE) {
+    G.velocity_mode = AM_VEL_NOMOVE;
+    update_effective_temp();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // TEMPORAL DEBT — backward movement accumulates structural debt
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -7601,6 +7625,7 @@ void am_step(float dt) {
                         + (1.0f - G.dissonance) * 0.3f
                         + G.attend_focus * 0.2f
                         + (1.0f - clamp01(G.debt * 0.1f)) * 0.2f;
+    if (raw_resonance < G.resonance_set) raw_resonance = G.resonance_set;  // RESONANCE floor (D3)
     G.resonance = fminf(G.resonance_ceiling, clamp01(raw_resonance));
 
     // Emergence: low entropy + high resonance = the field "knows" something

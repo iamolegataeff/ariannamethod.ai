@@ -150,6 +150,7 @@ typedef struct {
   // LAWS OF NATURE — enforced in am_step, not just stored
   float entropy_floor;      // minimum entropy (enforced: max(floor, entropy))
   float resonance_ceiling;  // maximum resonance (enforced: min(ceil, resonance))
+  float resonance_set;      // RESONANCE operator floor (enforced: max(set, resonance); 0=off)
   float debt_decay;         // debt decay per step (default 0.998)
   float emergence_threshold;// gate for wormhole amplification (default 0.3)
 
