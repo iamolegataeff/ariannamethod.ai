@@ -859,7 +859,7 @@ void am_reset_debt(void) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #define AM_SOMA_MAGIC   0x4F534D41u  /* 'A','M','S','O' little-endian */
-#define AM_SOMA_VERSION 1u
+#define AM_SOMA_VERSION 2u   /* v2: AM_State carries co-occurrence (H-term) + context ring */
 
 int am_field_save(const char* path) {
   if (!path || !path[0]) return -1;
@@ -6615,6 +6615,9 @@ int am_copy_state(float* out) {
   return 0;
 }
 
+// Co-occurrence telemetry (H-term word circulation): live edge count.
+int am_cooc_count(void) { return G.cooc_n; }
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOGIT MANIPULATION API — apply field state to generation
 // Ported from arianna_dsl.c, ariannamethod.lang/src/field.js
@@ -6764,11 +6767,73 @@ void am_register_prophecy_debt(float debt) {
     if (G.debt > 100.0f) G.debt = 100.0f;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CO-OCCURRENCE — Hebbian word circulation (H term). "Co-occurrence IS attention."
+// Words ingested from the dialogue accumulate as edges; the H-term tilts logits
+// toward what co-occurred with the recent context. Port of dario.c cooc_update +
+// ingest + H term. Lives in G (soma-persisted) → circulates across voices.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Accumulate one co-occurrence edge (src->dst) by delta; linear scan, append if new.
+void am_cooc_update(int src, int dst, float delta) {
+    if (src < 0 || dst < 0) return;
+    for (int i = 0; i < G.cooc_n; i++) {
+        if (G.cooc_src[i] == src && G.cooc_dst[i] == dst) { G.cooc_cnt[i] += delta; return; }
+    }
+    if (G.cooc_n < AM_COOC_MAX) {
+        G.cooc_src[G.cooc_n] = src; G.cooc_dst[G.cooc_n] = dst; G.cooc_cnt[G.cooc_n] = delta;
+        G.cooc_n++;
+    }
+}
+
+// Ingest a token sequence into the co-occurrence field (windowed ±5,
+// distance-weighted 1/|i-j|). Port of dario.c:1519-1528. Also pushes the tail
+// of the sequence into the context ring read by the H-term.
+void am_ingest_tokens(const int* ids, int n) {
+    if (!ids || n <= 0) return;
+    for (int i = 0; i < n; i++) {
+        int start = (i - 5 > 0) ? i - 5 : 0;
+        int end   = (i + 5 < n) ? i + 5 : n;
+        for (int j = start; j < end; j++) {
+            if (j == i) continue;
+            am_cooc_update(ids[i], ids[j], 1.0f / (float)(abs(i - j)));
+        }
+        G.cooc_total++;
+    }
+    // Refresh context ring with the last AM_COOC_CTX tokens of this sequence.
+    int from = (n > AM_COOC_CTX) ? n - AM_COOC_CTX : 0;
+    G.ctx_ring_n = n - from;
+    for (int k = 0; k < G.ctx_ring_n; k++) G.ctx_ring[k] = ids[from + k];
+}
+
+// H term (Hebbian resonance): tilt logits toward tokens that co-occurred with
+// the recent context. H[i] = Σ_{ctx_j} cooc[ctx_j, i] · decay_j, max-normalized.
+// Default empty cooc → no effect (other organisms unaffected). alpha_H fixed mild.
+void am_apply_hebbian_to_logits(float* logits, int n) {
+    if (G.cooc_n <= 0 || G.ctx_ring_n <= 0) return;
+    float* H = (float*)calloc(n, sizeof(float));
+    if (!H) return;
+    for (int c = 0; c < G.ctx_ring_n; c++) {
+        int ctx_id = G.ctx_ring[c];
+        float decay = 1.0f / (float)(G.ctx_ring_n - c);   // recent = stronger
+        for (int e = 0; e < G.cooc_n; e++) {
+            if (G.cooc_src[e] == ctx_id && G.cooc_dst[e] >= 0 && G.cooc_dst[e] < n)
+                H[G.cooc_dst[e]] += G.cooc_cnt[e] * decay;
+        }
+    }
+    float hmax = 1e-12f;
+    for (int i = 0; i < n; i++) if (H[i] > hmax) hmax = H[i];
+    const float alpha_H = 2.0f;   // mild Hebbian pull (logit-scale)
+    for (int i = 0; i < n; i++) logits[i] += alpha_H * (H[i] / hmax);
+    free(H);
+}
+
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n) {
     if (!logits || n <= 0) return;
     if (!G.field_enabled) return;   // FIELD OFF — overlay disabled
     am_apply_gamma_to_logits(logits, n);  // personality first
+    am_apply_hebbian_to_logits(logits, n);  // co-occurrence H term (no-op if empty)
     am_apply_destiny_to_logits(logits, n);
     am_apply_suffering_to_logits(logits, n);
     am_apply_attention_to_logits(logits, n);

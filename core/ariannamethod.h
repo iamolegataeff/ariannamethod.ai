@@ -100,6 +100,13 @@ void am_free_compiled(void* cs);
 #define AM_MAX_GAMMA       8    // max simultaneous personality essences
 #define AM_GAMMA_NAME_LEN  32
 
+// CO-OCCURRENCE — Hebbian word circulation ("co-occurrence IS attention").
+// Dense edge bag (src/dst/count parallel), linear-scan like Dario's CoocField.
+// Persisted in soma so words circulate across voices/sessions. Default empty
+// (n=0) → H-term contributes nothing → other organisms unaffected.
+#define AM_COOC_MAX        4096   // max co-occurrence edges (~48KB in AM_State)
+#define AM_COOC_CTX        8      // context window read by the H-term
+
 typedef struct {
     char  name[AM_GAMMA_NAME_LEN]; // personality name (e.g. "yent", "arianna")
     float alpha;                    // injection strength 0..1
@@ -233,6 +240,17 @@ typedef struct {
   int   janus_b;            // secondary face (index into gamma[])
   float janus_blend;        // blend ratio: 0=face_a only, 1=face_b only
   float gamma_drift;        // how fast janus_blend changes per step
+
+  // CO-OCCURRENCE — Hebbian resonance (H term). Words ingested from the dialogue
+  // settle here; the H-term tilts logits toward what co-occurred. Persisted in
+  // soma → circulates across voices/sessions. Default empty = no effect.
+  int   cooc_src[AM_COOC_MAX];   // edge source token id
+  int   cooc_dst[AM_COOC_MAX];   // edge destination token id
+  float cooc_cnt[AM_COOC_MAX];   // accumulated co-occurrence weight
+  int   cooc_n;                  // number of live edges (0 = off)
+  int   cooc_total;              // total ingested tokens (for normalization)
+  int   ctx_ring[AM_COOC_CTX];   // last-N emitted tokens (H-term context)
+  int   ctx_ring_n;              // tokens in the ring so far
 } AM_State;
 
 // Temporal modes
@@ -427,6 +445,14 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n);
 // Accrue per-token prophecy debt into the field (Fix D — inference choices feed
 // debt; system minimizes via decay/velocity DOWN, rejections feed dark matter).
 void am_register_prophecy_debt(float debt);
+
+// Co-occurrence (Hebbian word circulation, H term). Ingest tokens from the
+// dialogue; the H-term inside am_apply_field_to_logits tilts logits toward what
+// co-occurred. Persisted in soma → circulates across voices. Empty = no effect.
+void am_cooc_update(int src, int dst, float delta);
+void am_ingest_tokens(const int* ids, int n);
+void am_apply_hebbian_to_logits(float* logits, int n);
+int  am_cooc_count(void);   // live co-occurrence edge count (telemetry)
 
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n);
