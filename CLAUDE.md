@@ -10,7 +10,16 @@ Co-authored by Oleg Ataeff and Claude.
 > transformers with integrated field physics — arrays, matrices, autograd,
 > async, causal attention, and 80+ parameters of internal state. Every
 > command maps to a concrete C operation."* — README
-  
+
+## The log: small fixes → AMLLOG, big changes → README/spec
+
+`AMLLOG.md` is the running engineering log — every fix, every closed
+bug-class, dated with commit and proof. **Small fixes go there** (bug
+fixes, CPU/GPU sync corrections, single-op work, test additions, doc
+touch-ups). **Large changes** — a new AML keyword, a new op family, a new
+subsystem — get the `spec/` + README update too. README and spec are the
+public face; AMLLOG is the work. When in doubt, log it in AMLLOG first.
+
 ## AML vs notorch — they are parallel stacks
 
 This is the load-bearing piece of context for sessions touching either
