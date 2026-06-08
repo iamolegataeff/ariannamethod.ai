@@ -13,7 +13,7 @@
 
 # AML — Arianna Method Language
 
-**v4.8.0** · pure-C core · LGPL-3.0
+**v5.0.0** · pure-C core · LGPL-3.0
 
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No framework to install — the core is two C files (`libaml.a`); the Go inference wrapper, BLAS/Accelerate, and CUDA are optional.
 
@@ -22,6 +22,18 @@ Two files, ~9,400 lines of C, 509 tests. A transformer architecture — [Janus](
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
 > See also: [Trademark Policy](TRADEMARK.md) | [License (LGPL v3)](LICENSE)
+
+## What's new in v5.0.0 — Janus
+
+v5.0.0 makes the field physics real in compiled binaries and pays down the language's prophetic debts.
+
+- **Top-level directives now execute when compiled.** `amlc` used to silently skip top-level `PROPHECY` / `DESTINY` / `VELOCITY` / `FIELD` / `RESONANCE` / `LOAD` / `SAVE`, so a compiled `.aml` applied none of the field physics it declared. It now lowers them to `am_exec()` calls in a constructor, identical to the `aml` runner — every AML command maps to a concrete C operation again.
+- **`FIELD` and `RESONANCE` documented** — implemented in core but missing from the spec; now in §2.17, with the directive-lowering rule in §2.0.
+- **Honest claims** — the README no longer overstates "zero dependencies" (the core is pure C; Go inference, BLAS and CUDA are optional), and the "directives are no-ops without Janus" note is split — field directives apply standalone, only the model directives need the Janus backend.
+- **Portable `make janus`** — `janus/go.mod` no longer hardcodes a personal path; the `yent` Go engine resolves from its published module, and the standalone trainer/test stay out of the c-shared build.
+- **Janus is a family** — [`janus/README.md`](janus/README.md) frames Janus as an architecture *type* (DoE, Janus-R, Yent are kin), not a single model.
+
+509/509 tests green.
 
 ## What's new in v4.8.0
 
