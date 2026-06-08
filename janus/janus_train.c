@@ -1,3 +1,8 @@
+//go:build ignore
+
+// janus_train.c — standalone training host (own main + repo-root includes); the
+// ignore build tag keeps `go build -buildmode=c-shared` from pulling it into the
+// libjanus Go package. Build it directly with cc / train_lambda.sh.
 #define _POSIX_C_SOURCE 200809L
 // janus_train.c — C training host for Janus transformer (v2: EvolvingTokenizer)
 // Byte-level → BPE language model. No Python. No PyTorch.

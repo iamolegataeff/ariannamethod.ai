@@ -1,3 +1,7 @@
+//go:build ignore
+
+// (the ignore build tag keeps this standalone test out of the libjanus c-shared
+//  go build; `make test-janus` still compiles it directly via cc and links libjanus.)
 // test_janus_c.c — Janus C API test
 // Build: cc test_janus_c.c -L. -ljanus -o test_janus_c
 // Run: DYLD_LIBRARY_PATH=. ./test_janus_c [gguf_path] [delta_path]
