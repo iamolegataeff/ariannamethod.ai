@@ -13,11 +13,11 @@
 
 # AML — Arianna Method Language
 
-**v4.8.0** · pure C · zero dependencies · LGPL-3.0
+**v4.8.0** · pure-C core · LGPL-3.0
 
-A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
+A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No framework to install — the core is two C files (`libaml.a`); the Go inference wrapper, BLAS/Accelerate, and CUDA are optional.
 
-Two files, ~9,000 lines of C, 509 tests. A transformer architecture — [Janus](#janus--the-reference-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
+Two files, ~9,400 lines of C, 509 tests. A transformer architecture — [Janus](#janus--the-reference-architecture) — with triple attention (Content + RRPRAM + Echo), Dario field overlay, and reverse-mode autodiff. **176M parameter model, val bpb 0.866. Three SFT voices.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -122,7 +122,7 @@ make janus       # builds libjanus.dylib (Go shared library)
 make test-janus  # runs C API tests
 ```
 
-A host that links `libjanus` wires the engine into the runtime by calling `am_janus_register(...)` — when Janus is not linked, the directives above are no-ops.
+A host that links `libjanus` wires the Yent inference backend into the runtime via `am_janus_register(...)`. The field directives (`PROPHECY`, `VELOCITY`, `DESTINY`, `FIELD`, `RESONANCE`) apply with or without it; only the model directives (`LOAD_MODEL`, `GENERATE`) need the backend and no-op — with a diagnostic — when Janus is not linked.
 
 ### Soul formula: θ = ε + γ + αδ
 
@@ -747,7 +747,7 @@ What lives there, not here:
 - **BPE tokenizer**, dataloader, NaN guard, train/eval mode, profiler
 - **Hebbian microlearning** (`nt_hebbian_step`) — the same idea as `am_notorch_step`, reusable outside AML
 
-The split is intentional: AML describes *what a transformer does* as a field-physics organism — the body, the rhythm, the soul formula. `notorch` provides the *mechanism to train and run one* outside that body. Both ship zero-dep, both co-evolve, both are pure C.
+The split is intentional: AML describes *what a transformer does* as a field-physics organism — the body, the rhythm, the soul formula. `notorch` provides the *mechanism to train and run one* outside that body. Both are pure C at the core, both ship with no framework to install, both co-evolve.
 
 ## BLAS acceleration
 
