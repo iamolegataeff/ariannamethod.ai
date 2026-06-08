@@ -3,7 +3,7 @@
  * Reads .aml file, extracts BLOOD blocks, concatenates BLOOD COMPILE bodies
  * into a single .c file, runs cc to compile (or just emits the C with
  * --emit-c). AML runtime directives (PROPHECY, DESTINY, VELOCITY, FIELD,
- * RESONANCE, STEP, TRAIN, LOAD, SAVE) are lowered to `am_exec()` calls in a
+ * RESONANCE, LOAD, SAVE) are lowered to `am_exec()` calls in a
  * constructor so the compiled binary applies them before main() — the same
  * field physics the `aml` runner executes via am_exec_file. amlc lowers both
  * the BLOOD layer and the top-level directives to C.
@@ -61,7 +61,7 @@ typedef struct {
 
 static const char *AML_KEYWORDS[] = {
     "PROPHECY", "DESTINY", "VELOCITY", "FIELD", "RESONANCE",
-    "STEP", "TRAIN", "LOAD", "SAVE", NULL
+    "LOAD", "SAVE", NULL
 };
 
 static const char *skip_ws(const char *p) {
