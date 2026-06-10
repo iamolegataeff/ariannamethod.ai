@@ -59,11 +59,6 @@ typedef struct {
     int   n_directives;
 } Parsed;
 
-static const char *AML_KEYWORDS[] = {
-    "PROPHECY", "DESTINY", "VELOCITY", "FIELD", "RESONANCE",
-    "LOAD", "SAVE", NULL
-};
-
 static const char *skip_ws(const char *p) {
     while (*p == ' ' || *p == '\t') p++;
     return p;
@@ -131,17 +126,6 @@ static int track_braces(const char *buf, size_t n, int *depth,
     }
     *depth = d;
     *in_block_comment = bc;
-    return 0;
-}
-
-static int is_aml_keyword(const char *p) {
-    for (int i = 0; AML_KEYWORDS[i]; i++) {
-        size_t kl = strlen(AML_KEYWORDS[i]);
-        if (starts_with(p, AML_KEYWORDS[i])) {
-            char c = p[kl];
-            if (c == 0 || c == ' ' || c == '\t' || c == '\n') return 1;
-        }
-    }
     return 0;
 }
 
@@ -354,29 +338,23 @@ static int parse_aml(const char *path, Parsed *out) {
             continue;
         }
 
-        if (is_aml_keyword(p)) {
-            /* Top-level AML runtime directive — lower it to an am_exec() call so the
-             * compiled binary applies the field physics before main(), the same way
-             * the `aml` runner does via am_exec_file (was: silently skipped). */
-            if (out->n_directives < MAX_DIRECTIVES) {
-                char *d = out->directives[out->n_directives++];
-                strncpy(d, p, MAX_ARG_LEN - 1);
-                d[MAX_ARG_LEN - 1] = 0;
-                rtrim(d);
-            } else {
-                fprintf(stderr, "amlc: line %d: too many AML directives (max %d), dropping: %.40s\n",
-                        line_no, MAX_DIRECTIVES, p);
-            }
-            continue;
+        /* Any line that reaches here is not blank/comment/BLOOD/ECHO, so it is a
+         * top-level AML directive. Lower it verbatim to an am_exec() call (A-1:
+         * was — only the 7 names in AML_KEYWORDS were lowered, the other ~68 §2/§3
+         * commands dropped, breaking spec §2.0 "the transpiler lowers every
+         * top-level directive" and README/CLAUDE.md "every AML command maps to a
+         * concrete C operation"). am_exec upcases and silently ignores unknown
+         * commands per §9.5, so verbatim pass-through is safe and also makes
+         * matching case-insensitive — fixes A-2. */
+        if (out->n_directives < MAX_DIRECTIVES) {
+            char *d = out->directives[out->n_directives++];
+            strncpy(d, p, MAX_ARG_LEN - 1);
+            d[MAX_ARG_LEN - 1] = 0;
+            rtrim(d);
+        } else {
+            fprintf(stderr, "amlc: line %d: too many AML directives (max %d), dropping: %.40s\n",
+                    line_no, MAX_DIRECTIVES, p);
         }
-
-        char head[61] = {0};
-        int hi = 0;
-        while (hi < 60 && p[hi] && p[hi] != '\n') {
-            head[hi] = p[hi];
-            hi++;
-        }
-        fprintf(stderr, "amlc: line %d: unknown directive: %s\n", line_no, head);
     }
     fclose(f);
 

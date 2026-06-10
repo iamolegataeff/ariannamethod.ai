@@ -89,6 +89,8 @@
 // See ariannamethod.h for struct definitions and pack flags
 
 static AM_State G;
+static int g_am_initialized = 0;   // A-4: field auto-inits on first am_exec; kept
+                                   // separate from G so am_init's memset(&G) cannot clear it.
 
 // Blood compiler globals (used by Level 0 dispatch + Blood API)
 static AM_BloodModule g_blood_modules[AM_BLOOD_MAX_MODULES];
@@ -497,6 +499,7 @@ static AML_Symtab g_persistent_globals;
 void am_persistent_clear(void);
 
 void am_init(void) {
+  g_am_initialized = 1;   // A-4: mark initialized so am_exec's auto-init won't re-fire
   // Clean up tape from previous session
   am_tape_destroy();
 
@@ -6145,6 +6148,11 @@ static int aml_exec_block(AML_ExecCtx* ctx, int start, int end) {
 
 int am_exec(const char* script) {
     if (!script || !*script) return 0;
+    /* A-4: auto-init the field on first use. The compiled-binary path applies
+     * top-level directives via an __attribute__((constructor)) before main and
+     * never calls am_init(), so without this the directives ran on a zeroed
+     * AM_State (base_temperature=0, etc.) instead of the spec §2 defaults. */
+    if (!g_am_initialized) am_init();
     g_error[0] = 0;
 
     // preprocess into lines
