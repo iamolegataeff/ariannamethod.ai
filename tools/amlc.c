@@ -607,10 +607,20 @@ int main(int argc, char **argv) {
     int have_aml     = !no_accel && file_exists(libaml);
     int have_notorch = !no_accel && file_exists(libnotorch);
 
+    /* Relative #include / BLOOD INCLUDE paths in the .aml resolve against the
+     * source file's directory — but the emitted .c lands next to -o, which is
+     * often elsewhere (e.g. /tmp), so those headers go missing unless you build
+     * from the .aml's own folder. Put the source dir on the include path so an
+     * organism with `BLOOD INCLUDE "tools/x.h"` builds from any working dir. */
+    char src_dir[1024];
+    snprintf(src_dir, sizeof(src_dir), "%s", infile);
+    char *sd_slash = strrchr(src_dir, '/');
+    if (sd_slash) *sd_slash = '\0'; else snprintf(src_dir, sizeof(src_dir), ".");
+
     int n = snprintf(cmd, sizeof(cmd),
                      "cc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable "
-                     "-Wno-unused-function -Wno-comment -I'%s'",
-                     inc_dir);
+                     "-Wno-unused-function -Wno-comment -I'%s' -I'%s'",
+                     inc_dir, src_dir);
 
 #if defined(__APPLE__)
     if (!no_accel) {
