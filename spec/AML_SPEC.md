@@ -1,6 +1,6 @@
 # AML — Arianna Method Language
 
-**Version:** 1.0
+**Version:** 5.0.0 (Janus)
 **Extension:** `.aml`
 **Status:** Living specification
 
@@ -29,7 +29,7 @@ boolean        = "ON" | "OFF" | "on" | "off" | "1" | "0" | "true" | "false" ;
 whitespace     = " " | "\t" ;
 ```
 
-### 1.2 AML Level 1 (Macros — Implemented in JS)
+### 1.2 AML Level 1 (Macros)
 
 ```ebnf
 macro_def      = "MACRO" identifier "{" command_list "}" ;
@@ -127,7 +127,7 @@ Movement is language. Velocity determines the temperature of thought.
 |---------|--------|--------|---------|-------------|
 | `VELOCITY` | `VELOCITY <mode>` | `NOMOVE` `WALK` `RUN` `BACKWARD` | WALK | Movement mode |
 | `BASE_TEMP` | `BASE_TEMP <float>` | 0.1–3.0 | 1.0 | Base temperature before velocity modulation |
-| `JUMP` | `JUMP <int>` | any | 0 | Queue spacetime jump (negative = rewind) |
+| `JUMP` | `JUMP <int>` | ±1000 (clamped) | 0 | Accumulate into the pending spacetime jump (negative = rewind). Multiple `JUMP` calls add to the same pending value; the result is clamped to ±1000 |
 
 **Velocity → Temperature mapping:**
 
@@ -185,9 +185,9 @@ Four internal experts blend based on weights. Each maps to an effective temperat
 
 | Command | Syntax | Range | Default | Description |
 |---------|--------|-------|---------|-------------|
-| `SCHUMANN` | `SCHUMANN <float>` | 7.27–8.37 | 7.83 | Schumann frequency (Hz) |
+| `SCHUMANN` | `SCHUMANN <float>` | 7.0–8.5 | 7.83 | Schumann frequency (Hz) |
 | `SCHUMANN_MODULATION` | `SCHUMANN_MODULATION <float>` | 0–1 | 0.3 | Cosmic influence strength |
-| `COSMIC_COHERENCE` | `COSMIC_COHERENCE <float>` | 0–1 | 0.5 | Reference coherence |
+| `COSMIC_COHERENCE` | `COSMIC_COHERENCE <float>` | 0–1 | 1.0 | Reference coherence (perfect at baseline) |
 
 **Effect:** High cosmic coherence accelerates tension/dissonance decay (healing).
 
@@ -328,7 +328,7 @@ Runtime resonance learning. No backpropagation, no PyTorch. Per-token weight adj
 | Command | Syntax | Range | Default | Description |
 |---------|--------|-------|---------|-------------|
 | `PRESENCE_DECAY` | `PRESENCE_DECAY <float>` | 0–1 | 0.9 | Token presence fade rate |
-| `RESONANCE_BOOST` | `RESONANCE_BOOST <word> <float>` | 0.1–0.9 | — | Manual resonance weight boost |
+| `RESONANCE_BOOST` | `RESONANCE_BOOST <word> <float>` | 0–1 | — | Boost the global resonance metric by `clamp01(float) × 0.1`. The `<word>` argument is parsed (required for the two-argument form) but not currently used — per-token tracking is not implemented in the C kernel |
 | `NOTORCH_LR` | `NOTORCH_LR <float>` | 0.001–0.5 | 0.01 | Learning rate |
 | `NOTORCH_DECAY` | `NOTORCH_DECAY <float>` | 0.9–0.9999 | 0.999 | Weight decay factor (exponential, closer to 1 = slower decay) |
 
@@ -735,6 +735,7 @@ winter_energy       float   0–1         Rest/compression energy (computed)
 | **AML 3.0** | 3 | Blood compiler: runtime C compilation via popen+dlopen+dlsym — **implemented** |
 | **AML 3.1** | 3 | HarmonicNet (weightless neural network), METHOD (distributed cognition operator) — **implemented** |
 | **AML 3.2** | 3 | Lilith I/O: named pipes (PIPE, INDEX), data infrastructure communication — **implemented** |
+| **AML 5.0.0 (Janus)** | 3+ | `amlc` lowers every top-level directive to `am_exec()` constructor calls (field physics active in compiled binaries); `BLOOD INCLUDE`; `ECHO` is console logging per spec; version table corrected — **implemented** |
 
 ---
 
@@ -746,11 +747,15 @@ Blood compiles C code to shared libraries at runtime and loads functions via dls
 
 ```
 BLOOD COMPILE <name> { <c_code> }
+BLOOD MAIN { <c_code> }
 BLOOD LORA <name> <in_dim> <out_dim> <rank>
 BLOOD EMOTION <name> <valence> <arousal>
 BLOOD UNLOAD <name>
+BLOOD LINK <linker_flag>
 BLOOD INCLUDE "<path>"
 ```
+
+`BLOOD MAIN` has the same shape as `BLOOD COMPILE` but marks the block as the entry-point `main()` for a standalone executable; only one is allowed per file. `BLOOD LINK` passes an extra flag to the compiler/linker (e.g. `BLOOD LINK -lpthread`); multiple are additive. Both `BLOOD MAIN` and `BLOOD LINK` are transpile-time directives (`amlc` only).
 
 ### 14.2 Code Generators
 
