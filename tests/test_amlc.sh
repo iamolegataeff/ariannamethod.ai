@@ -30,7 +30,7 @@ trap "rm -rf '$WORK'" EXIT
 cat > "$WORK/test.aml" <<'EOF'
 # tiny smoke .aml — exercises BLOOD COMPILE / BLOOD MAIN / BLOOD LINK / ECHO
 
-ECHO "test_echo.h"
+BLOOD INCLUDE "test_echo.h"
 
 BLOOD COMPILE smoke_helpers {
 #include <stdio.h>
@@ -78,6 +78,59 @@ else
     echo "  FAIL: output mismatch"
     echo "  expected: $EXPECTED"
     echo "  got:      $OUT"
+    exit 1
+fi
+
+# ── A-1 conformance: every top-level directive lowers, case-insensitive ──
+#    (Mythos audit A-1/A-2: amlc used to lower only 7 whitelisted names and
+#     drop the rest; matching was case-sensitive. Guard against regression.)
+cat > directives.aml <<'EOF'
+PROPHECY 7
+PAIN 0.3
+LAW ENTROPY_FLOOR 0.1
+EXPERT_STRUCTURAL 0.25
+gamma 0.5
+EOF
+"$OLDPWD/tools/amlc" --emit-c directives.aml >dir.c 2>dir.err || true
+N_LOWERED=$(grep -c 'am_exec("' dir.c || true)
+N_DROPPED=$(grep -c 'unknown directive' dir.err || true)
+if [ "$N_LOWERED" = "5" ] && [ "$N_DROPPED" = "0" ]; then
+    echo "  PASS [A-1]: 5/5 directives lowered, 0 dropped (incl. lowercase 'gamma')"
+else
+    echo "  FAIL [A-1]: lowered=$N_LOWERED (want 5), dropped=$N_DROPPED (want 0)"
+    exit 1
+fi
+
+# ── A-3 conformance: a one-line BLOOD COMPILE block keeps its body ───────
+#    (Mythos audit A-3a: the opener-line body used to be discarded, so the
+#     canonical one-liner failed to compile with "unexpected EOF".)
+cat > oneline.aml <<'EOF'
+BLOOD COMPILE oneliner { static int f(void) { return 42; } }
+BLOOD MAIN { int main(void){ return f()==42?0:1; } }
+EOF
+if "$OLDPWD/tools/amlc" --emit-c oneline.aml >oneline.c 2>oneline.err \
+   && grep -q 'static int f(void)' oneline.c; then
+    echo "  PASS [A-3]: one-line BLOOD block body captured"
+else
+    echo "  FAIL [A-3]: one-line BLOOD body lost"
+    cat oneline.err
+    exit 1
+fi
+
+# ── A-5 conformance: ECHO logs (not #include); BLOOD INCLUDE injects #include ──
+#    (Mythos audit A-5: ECHO used to be lowered to a C #include; the spec defines
+#     it as console logging, and BLOOD INCLUDE is the explicit header directive.)
+cat > a5.aml <<'EOF'
+ECHO startup message
+BLOOD INCLUDE "stdio.h"
+EOF
+"$OLDPWD/tools/amlc" --emit-c a5.aml >a5.c 2>/dev/null || true
+if grep -q 'am_exec("ECHO startup message")' a5.c \
+   && grep -q '#include "stdio.h"' a5.c \
+   && ! grep -q '#include "ECHO' a5.c; then
+    echo "  PASS [A-5]: ECHO → am_exec (log); BLOOD INCLUDE → #include"
+else
+    echo "  FAIL [A-5]: ECHO/BLOOD INCLUDE lowering wrong"
     exit 1
 fi
 
