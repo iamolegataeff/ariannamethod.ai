@@ -91,6 +91,9 @@
 static AM_State G;
 static int g_am_initialized = 0;   // A-4: field auto-inits on first am_exec; kept
                                    // separate from G so am_init's memset(&G) cannot clear it.
+static char g_base_dir[256] = "";  // A-6: directory of the file being executed; seeds
+                                   // ctx.base_dir so relative INCLUDEs resolve against the
+                                   // including file, not the filesystem root.
 
 // Blood compiler globals (used by Level 0 dispatch + Blood API)
 static AM_BloodModule g_blood_modules[AM_BLOOD_MAX_MODULES];
@@ -6204,6 +6207,7 @@ int am_exec(const char* script) {
     // set up execution context
     AML_ExecCtx ctx;
     memset(&ctx, 0, sizeof(ctx));
+    snprintf(ctx.base_dir, sizeof(ctx.base_dir), "%s", g_base_dir);   // A-6: inherit include base dir
     ctx.lines = lines;
     ctx.nlines = nlines;
 
@@ -6647,6 +6651,15 @@ void am_free_compiled(void* handle) {
 
 int am_exec_file(const char* path) {
     if (!path) return 1;
+    // A-6: include recursion guard. am_exec() builds a fresh AML_ExecCtx on every
+    // call, resetting ctx.include_depth, so the INCLUDE handler's per-ctx guard
+    // never accumulated across am_exec_file — a file that INCLUDEs itself recursed
+    // to a stack overflow (SIGSEGV). Bound the nesting with a static counter here.
+    static int file_depth = 0;
+    if (file_depth >= AML_MAX_INCLUDE) {
+        snprintf(g_error, 256, "max include depth (%d) exceeded: %s", AML_MAX_INCLUDE, path);
+        return 1;
+    }
     g_error[0] = 0;
 
     FILE* f = fopen(path, "r");
@@ -6672,7 +6685,24 @@ int am_exec_file(const char* path) {
     fclose(f);
     buf[rd] = 0;
 
+    // A-6: publish this file's directory so relative INCLUDEs inside it resolve
+    // against it (am_exec seeds ctx.base_dir from g_base_dir). Save/restore for nesting.
+    char saved_base[256];
+    snprintf(saved_base, sizeof(saved_base), "%s", g_base_dir);
+    const char* slash = strrchr(path, '/');
+    if (slash) {
+        size_t n = (size_t)(slash - path);
+        if (n >= sizeof(g_base_dir)) n = sizeof(g_base_dir) - 1;
+        memcpy(g_base_dir, path, n);
+        g_base_dir[n] = 0;
+    } else {
+        snprintf(g_base_dir, sizeof(g_base_dir), ".");
+    }
+
+    file_depth++;
     int rc = am_exec(buf);
+    file_depth--;
+    snprintf(g_base_dir, sizeof(g_base_dir), "%s", saved_base);
     free(buf);
     return rc;
 }
