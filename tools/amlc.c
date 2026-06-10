@@ -17,7 +17,8 @@
  *   BLOOD COMPILE <name> { ...C... }   — named C source block
  *   BLOOD MAIN { ...C... }             — same shape, marks entry-point block
  *   BLOOD LINK <flag>                  — extra cc linker arg (e.g. -lpthread)
- *   ECHO "<path>"                      — inject `#include "<path>"`
+ *   BLOOD INCLUDE "<path>"             — inject `#include "<path>"` into the emitted C
+ *   ECHO <text>                        — log to console (spec); lowered to am_exec("ECHO ...")
  *
  * Usage: amlc <file.aml> [-o name] [--emit-c] [--no-accel] [--run -- args...]
  *
@@ -33,11 +34,14 @@
 
 #define MAX_BLOCKS    256
 #define MAX_LINKS     64
-#define MAX_ECHOS     64
+#define MAX_INCLUDES  64
 #define MAX_NAME      128
 #define MAX_LINE      8192
 #define MAX_ARG_LEN   512
-#define MAX_DIRECTIVES 64
+#define MAX_DIRECTIVES 512   /* raised from 64: A-1 lowers every directive and
+                              * code-shaped organisms exceed 64; overflow is now a
+                              * hard error, not a silent drop. Parsed is stack-alloc,
+                              * 512*MAX_ARG_LEN ~256KB is safe on an 8MB stack. */
 
 typedef struct {
     char  name[MAX_NAME];
@@ -53,8 +57,8 @@ typedef struct {
     int   has_main;
     char  links[MAX_LINKS][MAX_ARG_LEN];
     int   n_links;
-    char  echos[MAX_ECHOS][MAX_ARG_LEN];
-    int   n_echos;
+    char  includes[MAX_INCLUDES][MAX_ARG_LEN];   /* C headers from BLOOD INCLUDE */
+    int   n_includes;
     char  directives[MAX_DIRECTIVES][MAX_ARG_LEN];
     int   n_directives;
 } Parsed;
@@ -241,7 +245,7 @@ static int parse_aml(const char *path, Parsed *out) {
 
     out->n_compile = 0;
     out->n_links   = 0;
-    out->n_echos   = 0;
+    out->n_includes = 0;
     out->n_directives = 0;
     out->has_main  = 0;
 
@@ -317,6 +321,33 @@ static int parse_aml(const char *path, Parsed *out) {
             continue;
         }
 
+        /* BLOOD INCLUDE "<path>" — inject a C #include into the emitted unit.
+         * This is the explicit home for header injection (was overloaded onto
+         * ECHO, which the spec defines as console logging — see A-5). */
+        if (starts_with(p, "BLOOD INCLUDE")) {
+            const char *q = skip_ws(p + 13);
+            if (out->n_includes >= MAX_INCLUDES) {
+                fprintf(stderr, "amlc: error: too many BLOOD INCLUDE directives\n");
+                fclose(f);
+                return 1;
+            }
+            char *inc = out->includes[out->n_includes++];
+            /* strip surrounding quotes if present */
+            char tmp[MAX_ARG_LEN];
+            strncpy(tmp, q, MAX_ARG_LEN - 1);
+            tmp[MAX_ARG_LEN - 1] = 0;
+            rtrim(tmp);
+            char *src = tmp;
+            size_t L = strlen(src);
+            if (L >= 2 && src[0] == '"' && src[L-1] == '"') {
+                src[L-1] = 0;
+                src++;
+            }
+            strncpy(inc, src, MAX_ARG_LEN - 1);
+            inc[MAX_ARG_LEN - 1] = 0;
+            continue;
+        }
+
         /* Other BLOOD <kind> directives (LORA, EMOTION, ...) are runtime
          * concerns — skip with a notice rather than treating as syntax error. */
         if (starts_with(p, "BLOOD ")) {
@@ -331,31 +362,12 @@ static int parse_aml(const char *path, Parsed *out) {
             continue;
         }
 
-        if (starts_with(p, "ECHO ")) {
-            const char *q = skip_ws(p + 5);
-            if (out->n_echos >= MAX_ECHOS) {
-                fprintf(stderr, "amlc: error: too many ECHO statements\n");
-                fclose(f);
-                return 1;
-            }
-            char *e = out->echos[out->n_echos++];
-            /* strip surrounding quotes if present */
-            char tmp[MAX_ARG_LEN];
-            strncpy(tmp, q, MAX_ARG_LEN - 1);
-            tmp[MAX_ARG_LEN - 1] = 0;
-            rtrim(tmp);
-            char *src = tmp;
-            size_t L = strlen(src);
-            if (L >= 2 && src[0] == '"' && src[L-1] == '"') {
-                src[L-1] = 0;
-                src++;
-            }
-            strncpy(e, src, MAX_ARG_LEN - 1);
-            e[MAX_ARG_LEN - 1] = 0;
-            continue;
-        }
+        /* ECHO is no longer special-cased: per spec ("ECHO = Log text to console")
+         * it is an ordinary directive, lowered below to am_exec("ECHO ...") so the
+         * compiled binary logs it exactly like the runner. C-header injection moved
+         * to the BLOOD INCLUDE directive above (A-5). */
 
-        /* Any line that reaches here is not blank/comment/BLOOD/ECHO, so it is a
+        /* Any line that reaches here is not blank/comment/BLOOD, so it is a
          * top-level AML directive. Lower it verbatim to an am_exec() call (A-1:
          * was — only the 7 names in AML_KEYWORDS were lowered, the other ~68 §2/§3
          * commands dropped, breaking spec §2.0 "the transpiler lowers every
@@ -363,20 +375,21 @@ static int parse_aml(const char *path, Parsed *out) {
          * concrete C operation"). am_exec upcases and silently ignores unknown
          * commands per §9.5, so verbatim pass-through is safe and also makes
          * matching case-insensitive — fixes A-2. */
-        if (out->n_directives < MAX_DIRECTIVES) {
-            char *d = out->directives[out->n_directives++];
-            strncpy(d, p, MAX_ARG_LEN - 1);
-            d[MAX_ARG_LEN - 1] = 0;
-            rtrim(d);
-        } else {
-            fprintf(stderr, "amlc: line %d: too many AML directives (max %d), dropping: %.40s\n",
-                    line_no, MAX_DIRECTIVES, p);
+        if (out->n_directives >= MAX_DIRECTIVES) {
+            fprintf(stderr, "amlc: line %d: too many AML directives (max %d) — refusing "
+                    "rather than silently dropping; raise MAX_DIRECTIVES\n", line_no, MAX_DIRECTIVES);
+            fclose(f);
+            return 1;
         }
+        char *d = out->directives[out->n_directives++];
+        strncpy(d, p, MAX_ARG_LEN - 1);
+        d[MAX_ARG_LEN - 1] = 0;
+        rtrim(d);
     }
     fclose(f);
 
-    fprintf(stderr, "amlc: parsed %d BLOOD block(s), %d ECHO(s), %d LINK(s)%s\n",
-            out->n_compile, out->n_echos, out->n_links,
+    fprintf(stderr, "amlc: parsed %d BLOOD block(s), %d INCLUDE(s), %d LINK(s)%s\n",
+            out->n_compile, out->n_includes, out->n_links,
             out->has_main ? ", BLOOD MAIN present" : "");
     return 0;
 }
@@ -395,8 +408,8 @@ static int emit_c(Parsed *p, FILE *fp) {
     int total_lines = 1;
     fprintf(fp, "/* Generated by amlc — do not edit. */\n");
 
-    for (int i = 0; i < p->n_echos; i++) {
-        fprintf(fp, "#include \"%s\"\n", p->echos[i]);
+    for (int i = 0; i < p->n_includes; i++) {
+        fprintf(fp, "#include \"%s\"\n", p->includes[i]);
         total_lines++;
     }
 

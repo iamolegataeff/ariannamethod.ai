@@ -749,6 +749,7 @@ BLOOD COMPILE <name> { <c_code> }
 BLOOD LORA <name> <in_dim> <out_dim> <rank>
 BLOOD EMOTION <name> <valence> <arousal>
 BLOOD UNLOAD <name>
+BLOOD INCLUDE "<path>"
 ```
 
 ### 14.2 Code Generators
@@ -758,6 +759,8 @@ BLOOD UNLOAD <name>
 **EMOTION** generates functions: `{name}_respond(float* valence, float* arousal)`, `{name}_modulate_logits(float* logits, int vocab_size, float strength)`, `modulate_logits(float* logits, int vocab_size, float valence, float arousal)`.
 
 **COMPILE** accepts raw C code between braces. All defined symbols become available via `am_blood_sym()`.
+
+**INCLUDE** is a transpile-time directive (amlc only): `BLOOD INCLUDE "foo.h"` injects `#include "foo.h"` at the top of the emitted C unit so BLOOD COMPILE / BLOOD MAIN bodies can use external declarations. The runtime interpreter has no C-compilation step and ignores it. (Header injection was previously overloaded onto `ECHO`; `ECHO` is console logging per §9, and `BLOOD INCLUDE` is its explicit replacement.)
 
 ### 14.3 C API
 

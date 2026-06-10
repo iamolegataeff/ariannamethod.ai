@@ -1,0 +1,13 @@
+# blood_include.aml — BLOOD INCLUDE injects a C header into the compiled unit.
+# Transpile-time only (amlc): the runtime interpreter has no C step and ignores it.
+# Header injection used to be overloaded onto ECHO; ECHO is now console logging
+# (spec §9) and BLOOD INCLUDE is the explicit replacement. See spec §14.1.
+
+BLOOD INCLUDE "stdio.h"
+
+BLOOD MAIN {
+int main(void) {
+    printf("blood include ok\n");
+    return 0;
+}
+}

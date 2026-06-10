@@ -30,7 +30,7 @@ trap "rm -rf '$WORK'" EXIT
 cat > "$WORK/test.aml" <<'EOF'
 # tiny smoke .aml — exercises BLOOD COMPILE / BLOOD MAIN / BLOOD LINK / ECHO
 
-ECHO "test_echo.h"
+BLOOD INCLUDE "test_echo.h"
 
 BLOOD COMPILE smoke_helpers {
 #include <stdio.h>
