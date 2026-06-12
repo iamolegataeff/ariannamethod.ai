@@ -458,6 +458,7 @@ static void update_effective_temp(void) {
     case AM_VEL_WALK:     vel_mult = 0.85f; G.time_direction = 1.0f;  break;
     case AM_VEL_RUN:      vel_mult = 1.2f;  G.time_direction = 1.0f;  break;
     case AM_VEL_BACKWARD: vel_mult = 0.7f;  G.time_direction = -1.0f; break;
+    case AM_VEL_BREATHE:  vel_mult = 0.6f;  G.time_direction = 1.0f;  break;
     default:              vel_mult = 1.0f;  G.time_direction = 1.0f;
   }
   float vel_temp = base * vel_mult;
@@ -3612,9 +3613,10 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
 
       if (!strcmp(argup, "RUN")) G.velocity_mode = AM_VEL_RUN;
       else if (!strcmp(argup, "WALK")) G.velocity_mode = AM_VEL_WALK;
-      else if (!strcmp(argup, "NOMOVE")) G.velocity_mode = AM_VEL_NOMOVE;
+      else if (!strcmp(argup, "NOMOVE") || !strcmp(argup, "STOP")) G.velocity_mode = AM_VEL_NOMOVE;
       else if (!strcmp(argup, "BACKWARD")) G.velocity_mode = AM_VEL_BACKWARD;
-      else G.velocity_mode = clampi(safe_atoi(arg), -1, 2);
+      else if (!strcmp(argup, "BREATHE")) G.velocity_mode = AM_VEL_BREATHE;
+      else G.velocity_mode = clampi(safe_atoi(arg), -1, 3);
 
       update_effective_temp();
     }
