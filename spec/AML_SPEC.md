@@ -125,7 +125,7 @@ Movement is language. Velocity determines the temperature of thought.
 
 | Command | Syntax | Values | Default | Description |
 |---------|--------|--------|---------|-------------|
-| `VELOCITY` | `VELOCITY <mode>` | `NOMOVE` `WALK` `RUN` `BACKWARD` | WALK | Movement mode |
+| `VELOCITY` | `VELOCITY <mode>` | `NOMOVE` `WALK` `RUN` `BACKWARD` `STOP` `BREATHE` | WALK | Movement mode. `STOP` is a somatic alias for `NOMOVE` (the held, cold-observer state); `BREATHE` is the settling exhale (temp 0.6) — both contributed from Leo (neoleo). |
 | `BASE_TEMP` | `BASE_TEMP <float>` | 0.1–3.0 | 1.0 | Base temperature before velocity modulation |
 | `JUMP` | `JUMP <int>` | any | 0 | Queue spacetime jump (negative = rewind) |
 

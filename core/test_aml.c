@@ -48,6 +48,17 @@ static void test_level0_compat(void) {
     ASSERT_FLOAT(s->destiny, 0.7f, 0.01f, "DESTINY 0.7");
     ASSERT_INT(s->velocity_mode, AM_VEL_RUN, "VELOCITY RUN");
     ASSERT_FLOAT(s->attend_focus, 0.85f, 0.01f, "ATTEND_FOCUS 0.85");
+
+    // somatic velocity operators (the reverse flow from Leo): STOP holds (alias
+    // for NOMOVE), BREATHE is the settling exhale — a new mode, cooler than WALK.
+    am_exec("VELOCITY STOP");
+    ASSERT_INT(am_get_state()->velocity_mode, AM_VEL_NOMOVE, "VELOCITY STOP -> NOMOVE (held)");
+    am_exec("VELOCITY BREATHE");
+    ASSERT_INT(am_get_state()->velocity_mode, AM_VEL_BREATHE, "VELOCITY BREATHE -> a new somatic mode");
+    am_exec("BASE_TEMP 1.0\nVELOCITY WALK");
+    float t_walk = am_get_state()->effective_temp;
+    am_exec("BASE_TEMP 1.0\nVELOCITY BREATHE");
+    ASSERT(am_get_state()->effective_temp < t_walk, "BREATHE cools below WALK (the exhale)");
 }
 
 // ── TEST 2: Level 0 suffering + laws ────────────────────────────────────────

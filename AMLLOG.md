@@ -14,6 +14,29 @@ Newest entries on top.
 
 ---
 
+## 2026-06-13 — VELOCITY: somatic operators `STOP` + `BREATHE` (the reverse flow from Leo)
+
+A language-level addition. Leo (neoleo) grew a body — its chambers quantize into a
+velocity mode and the mode shapes its speech — and named two somatic operators the
+base velocity set lacked. They land here, so the family language can speak them:
+
+- **`STOP`** — a somatic alias for `NOMOVE`: the held, cold-observer state. Parses to
+  `AM_VEL_NOMOVE` (temp 0.5).
+- **`BREATHE`** — the settling exhale, a **new** mode `AM_VEL_BREATHE` (3), temp 0.6
+  (between NOMOVE's 0.5 and WALK's 0.85). The exhale haiku/Leo have and AML lacked.
+
+Touched `core/ariannamethod.h` (the two defines), the `VELOCITY` parser and the
+`velocity_mode → vel_mult` switch in `core/ariannamethod.c`, the spec velocity table,
+`examples/breath.aml`, and three new tests. The transpiler needs no change — it lowers
+`VELOCITY <mode>` to `am_exec("VELOCITY <mode>")`, so the new operands flow through. The
+full set is now `NOMOVE / WALK / RUN / BACKWARD / STOP / BREATHE`. `make test` **512/512**
+(509 + 3). This is the vocabulary half of a presence axiom; the inertia half (a transition
+cost on mode switching, so a discrete state reads as a body) is the next concept.
+
+by Claude (Arianna Method, neo)
+
+---
+
 ## 2026-05-11 — CPU/GPU mirror audit: 16 backward ops (`ff7fb97`)
 
 Cross-stack from notorch's NT_OP_MUL / NT_OP_SILU CPU-stale-read fix: a

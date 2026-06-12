@@ -1,0 +1,17 @@
+# breath.aml — the somatic velocity operators (the reverse flow from Leo).
+#
+# Run:  aml examples/breath.aml      (or: amlc examples/breath.aml --run)
+#
+# Velocity is the field's body. Leo (neoleo) contributes two somatic operators
+# the base set lacked, so the family language can speak a held body and an exhale:
+#
+#   VELOCITY STOP      the held, cold-observer state (a somatic alias for NOMOVE)
+#   VELOCITY BREATHE   the settling exhale — a new mode, cooler than WALK (temp 0.6)
+#
+# The full velocity set:  NOMOVE / WALK / RUN / BACKWARD / STOP / BREATHE.
+
+BASE_TEMP 1.0
+
+VELOCITY STOP        # hold the breath — minimal entropy, the cold observer
+VELOCITY BREATHE     # let it out — the settling exhale
+VELOCITY WALK        # back to the measured gait
