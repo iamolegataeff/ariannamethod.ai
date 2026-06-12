@@ -231,6 +231,7 @@ static int clampi(int x, int a, int b) {
 #define AM_METONIC_YEARS    19        // years per cycle
 #define AM_METONIC_LEAPS    7         // leap years per cycle
 #define AM_MAX_UNCORRECTED  33.0f     // max drift before correction (~3yr × 11.25)
+#define AM_VELOCITY_INERTIA 2.0f      // debt cost of switching the velocity mode (the body resists; D4 at debt>5 forces NOMOVE)
 
 static const int g_metonic_leap_years[7] = {3, 6, 8, 11, 14, 17, 19};
 static time_t g_epoch_t = 0;
@@ -3623,12 +3624,21 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
       snprintf(argup, sizeof(argup), "%.31s", arg);
       upcase(argup);
 
+      int prev_vel = G.velocity_mode;
       if (!strcmp(argup, "RUN")) G.velocity_mode = AM_VEL_RUN;
       else if (!strcmp(argup, "WALK")) G.velocity_mode = AM_VEL_WALK;
       else if (!strcmp(argup, "NOMOVE") || !strcmp(argup, "STOP")) G.velocity_mode = AM_VEL_NOMOVE;
       else if (!strcmp(argup, "BACKWARD")) G.velocity_mode = AM_VEL_BACKWARD;
       else if (!strcmp(argup, "BREATHE")) G.velocity_mode = AM_VEL_BREATHE;
       else G.velocity_mode = clampi(safe_atoi(arg), -1, 3);
+
+      // INERTIA — the body resists changing its gait. Switching the velocity mode
+      // costs (adds to debt); re-stating the same mode is free. Over-switching
+      // exhausts the field, and the recovery rule (debt > 5 in am_step) then forces
+      // NOMOVE. This makes "discrete dynamics with inertia reads as a body" a
+      // property of the language: a mood that holds and resists, not a switch.
+      if (G.velocity_mode != prev_vel)
+        G.debt = clampf(G.debt + AM_VELOCITY_INERTIA, 0.0f, 100.0f);
 
       update_effective_temp();
     }

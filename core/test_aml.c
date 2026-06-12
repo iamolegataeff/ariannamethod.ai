@@ -59,6 +59,16 @@ static void test_level0_compat(void) {
     float t_walk = am_get_state()->effective_temp;
     am_exec("BASE_TEMP 1.0\nVELOCITY BREATHE");
     ASSERT(am_get_state()->effective_temp < t_walk, "BREATHE cools below WALK (the exhale)");
+
+    // the inertia axiom: switching the velocity mode costs debt (the body resists);
+    // re-stating the same mode is free. Over-switching exhausts the field (D4).
+    am_exec("VELOCITY WALK\nDEBT 0");
+    float d_before = am_get_state()->debt;
+    am_exec("VELOCITY RUN");
+    ASSERT(am_get_state()->debt > d_before, "a velocity switch costs debt (inertia)");
+    float d_after = am_get_state()->debt;
+    am_exec("VELOCITY RUN");
+    ASSERT_FLOAT(am_get_state()->debt, d_after, 0.01f, "re-stating the same mode is free");
 }
 
 // ── TEST 2: Level 0 suffering + laws ────────────────────────────────────────

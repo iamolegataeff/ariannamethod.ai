@@ -150,7 +150,7 @@ typedef struct {
 
   // MOVEMENT
   int   pending_jump;       // queued jump (sim steps)
-  int   velocity_mode;      // NOMOVE=0, WALK=1, RUN=2, BACKWARD=-1
+  int   velocity_mode;      // NOMOVE=0, WALK=1, RUN=2, BACKWARD=-1, BREATHE=3 (STOP=NOMOVE)
   float velocity_magnitude; // current speed (0..1)
   float base_temperature;   // base temp before velocity modulation
   float effective_temp;     // computed: base + velocity + expert blend

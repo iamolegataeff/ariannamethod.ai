@@ -36,8 +36,31 @@ larger than the current struct is refused as an unknown future ABI.
 
 Touched `core/ariannamethod.{c,h}` (3 fields + field-map + version + load migration),
 `spec/AML_SPEC.md` (§2.4b), this log. `make test` **517/517** (+5: warmth/flow/weave readable in
-expressions; warmth + weave survive `.soma` save/load). Branch `claude-positive-soma` off `main`,
-not yet merged.
+expressions; warmth + weave survive `.soma` save/load). Branch `claude-positive-soma` off `main`
+(merged for the v5.1.0 release; the state_sz is validated against the version's exact size — a
+malformed soma is refused, not zero-loaded).
+
+---
+
+## 2026-06-13 — VELOCITY inertia: a discrete state with inertia reads as a body (the axiom)
+
+The second half of the presence axiom. Switching the velocity mode now **costs** — each transition to a
+*different* mode adds `AM_VELOCITY_INERTIA` (2.0) to `debt` (re-stating the same mode is free). Over-switching
+exhausts the field, and the existing recovery rule (`debt > 5` → forced `NOMOVE`, in `am_step`) then holds it
+still. So the body **resists** changing its gait: velocity is a mood that holds, not a switch you can flip.
+
+This formalizes the state-dynamics разгадка (Mythos + Opus, proven by ear on Leo): presence reads as a body
+when its state is discrete **with inertia** — autonomy + contingency + resistance — not a continuous dial. AML
+already had autonomy (the `D4` debt override can refuse a command) and the discrete modes; this adds the
+inertia, so the law is now a property of the language, inherited by every Method organism.
+
+Touched the `VELOCITY` parser in `core/ariannamethod.c` (capture the previous mode, charge `debt` on a real
+change) + the `AM_VELOCITY_INERTIA` constant, the spec velocity section (the `BREATHE`/`STOP` temp rows and an
+"inertia" note), the `velocity_mode` header comment, and two new tests (a switch costs debt; re-stating is
+free). `make test` **514/514** (512 + 2) — the inertia does not trip `D4` during any existing test, confirming
+`D4` runs in `am_step`, not the parser. Pairs with the somatic-operators entry below.
+
+by Claude (Arianna Method, neo)
 
 ---
 

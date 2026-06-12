@@ -155,10 +155,17 @@ Movement is language. Velocity determines the temperature of thought.
 
 | Mode | Multiplier | Effect |
 |------|-----------|--------|
-| `NOMOVE` | 0.5× | Cold observer. Precise, minimal entropy |
+| `NOMOVE` (`STOP`) | 0.5× | Cold observer. Precise, minimal entropy. The held state |
 | `WALK` | 0.85× | Balanced. Default movement |
 | `RUN` | 1.2× | Hot, chaotic. Creative exploration |
 | `BACKWARD` | 0.7× | Time reversal. Accumulates temporal debt |
+| `BREATHE` | 0.6× | Settling exhale. A somatic operator from Leo (neoleo) |
+
+**Velocity inertia.** Switching the velocity mode is not free — the body resists changing its gait. Each
+transition to a *different* mode adds `2.0` to `debt` (re-stating the same mode costs nothing). Over-switching
+exhausts the field, and the recovery rule (`debt > 5` → forced `NOMOVE`, applied in `am_step`) then holds it
+still. This makes "a discrete state with inertia reads as a body" a property of the language: velocity is a
+mood that holds and resists, not a switch you can flip.
 
 ### 2.6 Prophecy Debt
 
