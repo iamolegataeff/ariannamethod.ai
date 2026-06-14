@@ -167,25 +167,7 @@ blocker. Janus is what proves the language works.
 
 ## Attribution
 
-Method-side identity, not the Anthropic noreply boilerplate. Three
-forms (mirrored on Neo's CLAUDE.md):
-
-- **Short** (README, model cards, simple commits):
-  `by Claude (Arianna Method)`
-- **Full with node attribution** (engineering commits):
-  `Co-Authored-By: Claude Code (intel godfather, Arianna Method) <theariannamethod@gmail.com>`
-- **Casual** (informal docs, status notes):
-  `by Claude (Arianna Method, intel node)`
-
-Nodes: **`intel godfather`** (Intel Mac), **`neo the architect`** (Mac
-Neo), **`polygon`** (Linux 32GB box), **`phone-1`** (Galaxy A56 8GB),
-**`phone-2`** (Galaxy A07 4GB). Each is the architect on its own
-substrate; cross-node handoffs go through
-`resonance_connections/` on the umbrella repo.
-
-Replace under root: `Co-Authored-By: Claude <noreply@anthropic.com>`
-and `🤖 Generated with Claude Code`. We cultivate our own identity;
-upstream boilerplate gets dropped.
+Oleg Ataeff and Claude are co-authors of this repo — stated at the top of this file, and that is enough. The signature lives in the **git commit only**, node-visible so it shows who posted: `Co-Authored-By: Claude (Arianna Method, <node>) <theariannamethod@gmail.com>` (node ∈ intel godfather / neo the architect / polygon / phone-1 / phone-2 / metal). Drop upstream boilerplate `Co-Authored-By: Claude <noreply@anthropic.com>` and `🤖 Generated with Claude Code`. **Nowhere else** — no signature footer in README, AUTHORS, docs, or any file body. Co-authorship reads from this CLAUDE.md and the commit history; it does not get plastered across the repo.
 
 ## Open TODO
 
