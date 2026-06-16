@@ -1,6 +1,6 @@
 # AML — Arianna Method Language
 
-**Version:** 5.0.0 (Janus)
+**Version:** 5.1.0 (Soma)
 **Extension:** `.aml`
 **Status:** Living specification
 
@@ -766,6 +766,7 @@ winter_energy       float   0–1         Rest/compression energy (computed)
 | **AML 3.1** | 3 | HarmonicNet (weightless neural network), METHOD (distributed cognition operator) — **implemented** |
 | **AML 3.2** | 3 | Lilith I/O: named pipes (PIPE, INDEX), data infrastructure communication — **implemented** |
 | **AML 5.0.0 (Janus)** | 3+ | `amlc` lowers every top-level directive to `am_exec()` constructor calls (field physics active in compiled binaries); `BLOOD INCLUDE`; `ECHO` is console logging per spec; version table corrected — **implemented** |
+| **AML 5.1.0 (Soma)** | 3+ | the somatic body — `VELOCITY STOP`/`BREATHE` + velocity inertia (a discrete state with inertia reads as a body); positive-soma read-only fields `warmth`/`flow`/`weave` (an attached organism's felt body, readable in expressions); `.soma` v3 with v2 prefix-migration — **implemented** |
 
 ---
 
