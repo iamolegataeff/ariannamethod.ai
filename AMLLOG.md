@@ -14,6 +14,29 @@ Newest entries on top.
 
 ---
 
+## 2026-06-30 — Expression operators: `BE` / `ASK` (the body speaks)
+
+A language-level addition (new keywords) — the reverse flow from Leo (neoleo) again. After
+velocity (the breath) and the soma fields (the felt body), the voice. Two level-0 directives
+let a script speak a body:
+
+- `BE [x]` — speak-from-body intensity (default 1.0): how strongly the running-self colors the
+  host's own words. "я есть [тело]".
+- `ASK [x]` — voice-the-not-knowing intensity: how strongly the carried gap (darkmatter) gropes
+  through. No argument = the field's own `dark_gravity`, so `ASK` resonates with the existing
+  darkmatter (`SCAR`) instead of reinventing it.
+
+Both set new `AM_State` fields `be_voice` / `ask_voice` (init `-1` = "no directive this run",
+the host stays autonomous), readable in expressions via the field-map (`field.be_voice` /
+`field.ask_voice`). A host (Leo) reads them back after `am_exec`, the way it reads
+`velocity_mode`. Touched `core/ariannamethod.{c,h}`, the field-map, `core/test_aml.c` (+4 tests,
+incl. the no-arg `ASK` = `dark_gravity` case), `examples/body.aml`, and the spec (§2.5b
+Expression + the state-fields table). Transpiler unchanged — `amlc` lowers `BE` / `ASK` to
+`am_exec` generically (verified via `--emit-c`). `make test` **524/524** (was 520). Feature
+branch `leo-be-ask-operators` off `main` (`aba68e2`); not yet merged.
+
+---
+
 ## 2026-06-16 — Positive Soma: `warmth` / `flow` / `weave` (the expansive axis)
 
 A language-level addition, the mirror of suffering. Leo's reverse AML bridge (neoleo E-9) writes the

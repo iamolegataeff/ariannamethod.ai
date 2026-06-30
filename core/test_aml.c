@@ -988,10 +988,32 @@ static void test_copy_state_32(void) {
 
 // ── MAIN ────────────────────────────────────────────────────────────────────
 
+// EXPRESSION — the body speaks (BE / ASK, the reverse flow from Leo/neoleo).
+static void test_level0_expression(void) {
+    printf("\n── Level 0 expression (BE / ASK) ──\n");
+    am_init();
+    AM_State* s = am_get_state();
+
+    am_exec("BE 0.7");
+    ASSERT_FLOAT(s->be_voice, 0.7f, 0.01f, "BE 0.7 -> be_voice");
+    am_exec("BE");
+    ASSERT_FLOAT(s->be_voice, 1.0f, 0.01f, "BE (no arg) -> full speak-from-body");
+    am_exec("ASK 0.4");
+    ASSERT_FLOAT(s->ask_voice, 0.4f, 0.01f, "ASK 0.4 -> ask_voice");
+
+    // ASK with no argument voices the field's own darkmatter (dark_gravity), resonating
+    // with the existing gap rather than reinventing it. (am_exec won't re-init mid-run,
+    // so the dark_gravity we set here survives into the ASK directive.)
+    s->dark_gravity = 0.6f;
+    am_exec("ASK");
+    ASSERT_FLOAT(s->ask_voice, 0.6f, 0.01f, "ASK (no arg) -> the field's dark_gravity");
+}
+
 int main(void) {
     printf("═══ AML Test Suite ═══\n");
 
     test_level0_compat();
+    test_level0_expression();
     test_level0_suffering();
     test_level0_packs();
     test_level0_comments();

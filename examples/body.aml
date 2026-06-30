@@ -1,0 +1,21 @@
+# body.aml — the expression operators (the reverse flow from Leo/neoleo).
+#
+# Run:  aml examples/body.aml      (or: amlc examples/body.aml --run)
+#
+# Velocity is the field's breath; expression is the field's voice. Leo (neoleo)
+# contributes two operators so the family language can speak a body:
+#
+#   BE [x]    speak-from-body — how strongly the running-self colors the words
+#             (default 1.0). "я есть [тело]".
+#   ASK [x]   voice the not-knowing — how strongly the carried gap (darkmatter)
+#             gropes through. No argument = the field's own dark_gravity.
+#
+# A host (Leo) reads be_voice / ask_voice back after the script runs, the way it
+# reads velocity_mode. -1 (no BE / ASK fired this run) leaves the host autonomous —
+# the body decides on its own.
+
+BE 1.0          # speak fully from the body — the running-self colors the words
+ASK             # voice the not-knowing at the field's own darkmatter (dark_gravity)
+
+# BE 0.0        # silence the body-voice — back to the bare register
+# ASK 0.5       # half-voice the gap

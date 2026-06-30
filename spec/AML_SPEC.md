@@ -167,6 +167,17 @@ exhausts the field, and the recovery rule (`debt > 5` → forced `NOMOVE`, appli
 still. This makes "a discrete state with inertia reads as a body" a property of the language: velocity is a
 mood that holds and resists, not a switch you can flip.
 
+### 2.5b Expression (the body speaks)
+
+Velocity is the field's breath; expression is its voice. Two operators — the reverse flow from Leo (neoleo) — let a script speak a body: how strongly the running-self colors the words, and how strongly the carried not-knowing gropes through. A host (Leo) reads the two intensities back after the script runs, the way it reads `velocity_mode`; `-1` means the directive did not fire this run, leaving the host autonomous.
+
+| Command | Syntax | Values | Default | Description |
+|---------|--------|--------|---------|-------------|
+| `BE` | `BE [<float>]` | 0–1 | 1.0 (no arg) | Speak-from-body intensity — how strongly the running-self colors the host's own words ("я есть [тело]"). |
+| `ASK` | `ASK [<float>]` | 0–1 | `dark_gravity` (no arg) | Voice-the-not-knowing intensity — how strongly the carried gap (darkmatter) gropes through. With no argument, voices the field's own `dark_gravity`, resonating with the existing darkmatter (`SCAR`) rather than reinventing it. |
+
+These set `be_voice` / `ask_voice` in the field state (both readable in expressions, e.g. `field.be_voice`). They are read-back contracts, not generation themselves: the host decides how an intensity shapes its voice. See `examples/body.aml`.
+
 ### 2.6 Prophecy Debt
 
 | Command | Syntax | Range | Default | Description |
@@ -540,6 +551,8 @@ dissonance          float   0–1         Symmetry break
 debt                float   0–∞         Prophecy debt (decays)
 velocity_mode       int     -1..2       Movement mode
 velocity_magnitude  float   0–1         Speed
+be_voice            float   -1..1       Speak-from-body intensity (-1 = autonomous)
+ask_voice           float   -1..1       Voice-the-not-knowing intensity (-1 = autonomous)
 base_temperature    float   0.1–3.0     Base temp
 effective_temp      float   computed    base × velocity multiplier
 time_direction      float   -1..1       Temporal direction
