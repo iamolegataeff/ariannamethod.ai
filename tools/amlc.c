@@ -464,6 +464,15 @@ static int emit_c(Parsed *p, FILE *fp) {
         fwrite(b->code, 1, b->code_len, fp);
         for (size_t j = 0; j < b->code_len; j++)
             if (b->code[j] == '\n') total_lines++;
+    } else if (p->n_directives > 0 && p->n_compile == 0) {
+        /* Directives-only program (e.g. body.aml / breath.aml): no BLOOD MAIN, and no raw
+         * C that might define its own main. Emit a trivial entry point so --run can link an
+         * executable — the constructor above has already applied the field directives before
+         * main() runs. BLOOD COMPILE programs are left untouched: their C may carry its own
+         * main, and emitting a second would clash. */
+        fprintf(fp, "\n/* directives-only: trivial entry point (the constructor applied the field) */\n");
+        fprintf(fp, "int main(void) { return 0; }\n");
+        total_lines += 2;
     }
     return total_lines;
 }
